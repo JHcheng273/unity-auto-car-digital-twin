@@ -223,6 +223,56 @@ Scene 视图里还能看到从车头射出的绿/红射线。按 **Ctrl+S** 保�
 
 ---
 
+## 附：把界面换成中文（可选，但强烈建议）
+
+**先说结论**：Unity 2022.3 **官方支持**中文界面，但要额外装一个 **2.3 MB 的语言包**。
+你这台机器上目前**还没装**（我查过 `Editor\Data\Localization` 目录不存在）。
+
+> 已确认的事实（从你本机文件里读出来的，不是网上抄的）：
+> - 语言包模块 ID：`language-zh-hans`，显示名「简体中文」，分类 `Language packs (Preview)`
+> - 装到哪：`E:\新建文件夹 (8)\2022.3.62f3c1\Editor\Data\Localization`
+> - 你这版一共提供 4 种：简体中文 / 繁體中文 / 日本語 / 한국어
+> - Unity Hub 本身**已经是中文**了（`languageConfig.json` = `zh_CN`），只差编辑器这一步
+
+### 第一步：装语言包（在 Unity Hub 里，约 1 分钟）
+
+1. 打开 **Unity Hub**
+2. 左侧点 **安装**（Installs）
+3. 找到 **2022.3.62f3c1**，点它右边的 **齿轮 / ⋮ → 添加模块**（Add Modules）
+4. 在模块列表里找到 **Language packs (Preview)** 分类
+5. 勾选 **简体中文**
+6. 点 **安装 / 继续**，等它下完（只有 2.3 MB，很快）
+
+> 如果找不到「添加模块」按钮 → 说明 Hub 没登记这套安装，用下面的备选方案。
+
+### 第二步：在 Unity 里切成中文
+
+1. 打开工程（`E:\My project`）
+2. 顶部菜单 **Edit → Preferences**（编辑 → 首选项）
+3. 左侧列表选 **Languages**
+4. 勾选 **Editor Language (Experimental)** ← 必须先勾这个，下拉框才会亮
+5. 在 **Editor language** 下拉框里选 **简体中文**
+6. **重启 Unity**（这一步不能省，不重启不生效）
+
+### 几个要提前知道的事
+
+| 事项 | 说明 |
+|---|---|
+| 标签带 **(Experimental)** | 这是**实验性**功能，部分文字仍是英文，属正常现象，不是你没装好 |
+| 菜单名会变 | 重启后 `Edit` 变「编辑」、`Window` 变「窗口」、`GameObject` 变「游戏对象」 |
+| 队友的截图对不上 | 如果 C 用的是英文界面，你俩菜单名会不一样——**建议全组统一**，要么都中文要么都英文 |
+| 想改回英文 | 同一个界面，取消勾选 `Editor Language`，重启即可（语言包不用卸载） |
+| 代码里的报错 | **C# 报错信息默认还是英文**，这是另一套开关（`kEnableCompilerMessagesLocalization`），先别动它 |
+
+> **备选方案**（Hub 装不上时用）：我已经把官方语言包下好了（13,974 条翻译，校验通过），
+> 放在 `%TEMP%\unity-langpack\zh-hans.po`。关掉 Unity Hub 之后告诉我，我用命令行帮你装。
+> 或者你手动放到 `E:\新建文件夹 (8)\2022.3.62f3c1\Editor\Data\Localization\` 目录下（这个目录现在不存在，要新建）。
+
+> ⚠️ 注意：网上那些"Unity 汉化包""Unity 中文补丁"是**第三方改的**，来路不明、版本对不上就会崩。
+> 上面的方法是**官方**的，别去下别的东西。
+
+---
+
 ## 十个"我点了没反应"（新手必踩）
 
 | 现象 | 原因 | 解决 |
@@ -237,6 +287,8 @@ Scene 视图里还能看到从车头射出的绿/红射线。按 **Ctrl+S** 保�
 | `The type or namespace name 'XXX' could not be found` | 脚本没拷全 | 确认 `Assets/Scripts/B/` 和 `Assets/Scripts/Shared/` 都在 |
 | Hub 里项目打不开 | 编辑器没装好 | 回第 1 步重装编辑器 |
 | 中文显示成乱码 | 脚本编码不是 UTF-8 | 用 VS 另存为 UTF-8 |
+| 勾了 `Editor Language` 界面还是英文 | 没重启 / 语言包没装 | 先确认 Hub 里装过 `Language packs`，然后**重启 Unity** |
+| `Preferences` 里找不到 `Languages` | 编辑器版本没带语言包机制 | 你这个版本有，确认是 `2022.3.62f3c1`，别用别的版本打开 |
 
 ---
 
