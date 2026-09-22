@@ -113,6 +113,17 @@ C: TelemetryPanel 接入 BModuleFacade
 
 ---
 
+## 完全没用过 Unity？先看这份
+
+[`docs/Unity零基础第一次上手.md`](docs/Unity零基础第一次上手.md)
+—— 补装编辑器 → 新建工程 → 认识界面 → 建物体 → 挂第一个脚本 → 导入项目脚本 → 一键搭场景跑起来。
+每一步都写了"点哪里"和"应该看到什么"，全程约 2 小时。
+
+> 注意：本仓库**不是**一个可直接打开的 Unity 工程（没有 ProjectSettings / Packages）。
+> 正确做法是：用 Unity Hub 新建 3D 工程 → 把本仓库 `Assets/` 下的内容拷进工程的 `Assets/`。
+
+---
+
 ## 自学 / 学习路线（两份，按目的选）
 
 | 目的 | 看这份 | 关键词 |
