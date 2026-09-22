@@ -51,7 +51,7 @@ public static class BTestSceneBuilder
         }
 
         slot.stringValue = name;
-        so.ApplyModifications();
+        so.ApplyModifiedProperties();   // 注意：是 ApplyModifiedProperties，不是 ApplyModifications
         Debug.Log($"[B模块] 已创建 Layer {index} = {name}");
     }
 
@@ -94,7 +94,10 @@ public static class BTestSceneBuilder
         car.name = "B_TestCar";
         car.transform.position = pathComp.GetPoint(0) + Vector3.up * 0.5f;
         car.transform.localScale = new Vector3(1.5f, 1f, 3f);
-        car.transform.LookAt(pathComp.GetPoint(1));
+        // 只取水平方向，避免车身被"抬头/低头"（会让射线斜着打出去）
+        Vector3 look = pathComp.GetPoint(1);
+        look.y = car.transform.position.y;
+        car.transform.LookAt(look);
 
         var follower = car.AddComponent<WaypointFollower>();
         follower.path = pathComp;
@@ -116,7 +119,9 @@ public static class BTestSceneBuilder
         rig.detector = detector;
         rig.moveSpeed = 6f;
 
-        car.AddComponent<BModuleFacade>();   // 给 C 的接口，先挂上
+        var facade = car.AddComponent<BModuleFacade>();   // 给 C 的接口
+        facade.detector = detector;                        // 必须手动接上，否则 C 读到的是空值
+        facade.follower = follower;
 
         // ---- 障碍物 ----
         var obsRoot = new GameObject("Obstacles");
@@ -147,7 +152,8 @@ public static class BTestSceneBuilder
         }
 
         Selection.activeGameObject = car;
-        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+        // EditorSceneManager 在 UnityEditor.SceneManagement 里，这里写全名最保险
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
 
         Debug.Log("[B模块] 场景搭好了！按 Play 试试。\n" +
                   "  · 方块应该自己沿 8 个青色点跑圈\n" +
