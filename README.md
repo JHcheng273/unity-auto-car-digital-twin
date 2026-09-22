@@ -110,3 +110,20 @@ C: TelemetryPanel 接入 BModuleFacade
 
 见 [`docs/参考项目清单.md`](docs/参考项目清单.md)。
 **参考思路可以，整段复制代码不行**——报告里必须注明参考来源，答辩会问。
+
+---
+
+## MATLAB 数字孪生联动（可选扩展，第 5 周起）
+
+Unity 当物理实体，MATLAB 当虚拟模型（算法层），中间一根 UDP 线双向传数据：
+
+```
+Unity ──状态(20Hz JSON)──▶ MATLAB
+Unity ◀──期望速度/刹车──── MATLAB
+```
+
+- 方案与分工：[`docs/MATLAB联动方案.md`](docs/MATLAB联动方案.md)
+- Unity 侧桥接：`Assets/Scripts/Shared/MatlabUdpBridge.cs`（归属 C，B 只喂数据）
+- MATLAB 侧：`matlab/unity_bridge.m`（含实时曲线 + 自动存 CSV）
+
+**前 6 周不要碰。** 核心闭环是 1，MATLAB 是后面的 0。
