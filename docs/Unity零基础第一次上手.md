@@ -14,6 +14,7 @@
 | 许可证 | ✅ 已激活，日志显示 `Successfully resolved entitlement details` |
 | Unity 工程 | ✅ **已建好**：`E:\My project\`（3D 模板，含 SampleScene） |
 | 项目脚本 | ✅ **已帮你复制进去并编译通过**（8 个 .cs，日志零报错） |
+| 中文语言包 | ✅ **已帮你装好**（官方 `language-zh-hans`，2.3 MB，见文末附录） |
 | 代码编辑器 | ⚠️ 没检测到 VS / VS Code，写代码前建议装一个 |
 
 > 我的 Unity 装在 E 盘，不在 C 盘——第一次我查错了位置，以这里为准。
@@ -223,36 +224,51 @@ Scene 视图里还能看到从车头射出的绿/红射线。按 **Ctrl+S** 保�
 
 ---
 
-## 附：把界面换成中文（可选，但强烈建议）
+## 附：把界面换成中文（语言包我已经帮你装好了）
 
-**先说结论**：Unity 2022.3 **官方支持**中文界面，但要额外装一个 **2.3 MB 的语言包**。
-你这台机器上目前**还没装**（我查过 `Editor\Data\Localization` 目录不存在）。
+**先说清楚三件事是分开的**，很多人搞混：
+
+| 你想改的 | 开关在哪 |
+|---|---|
+| **Unity Hub** 的界面（项目列表那个窗口） | Hub → 设置 → Appearance → Language（**你已经是中文了**） |
+| **打开项目后的 Unity 编辑器**（有 Scene / Hierarchy / Inspector 那个） | 需装语言包 + Edit → Preferences → Languages ← **你要的是这个** |
+| 游戏运行时给玩家看的 UI | 和上面两个**毫无关系**，是项目代码里的事 |
 
 > 已确认的事实（从你本机文件里读出来的，不是网上抄的）：
 > - 语言包模块 ID：`language-zh-hans`，显示名「简体中文」，分类 `Language packs (Preview)`
-> - 装到哪：`E:\新建文件夹 (8)\2022.3.62f3c1\Editor\Data\Localization`
+> - 官方下载地址：`https://new-translate.cdn.unity.cn/v1/live/54/2022.3/zh-hans`（2,388,191 字节）
 > - 你这版一共提供 4 种：简体中文 / 繁體中文 / 日本語 / 한국어
-> - Unity Hub 本身**已经是中文**了（`languageConfig.json` = `zh_CN`），只差编辑器这一步
+> - Unity Hub 支持 5 种语言（English / 日本語 / 한국어 / 简体中文 / 繁體中文），你的 Hub 已是 `zh_CN`
 
-### 第一步：装语言包（在 Unity Hub 里，约 1 分钟）
+### ✅ 语言包：已装好（2026-09-22 23:50）
 
-1. 打开 **Unity Hub**
-2. 左侧点 **安装**（Installs）
-3. 找到 **2022.3.62f3c1**，点它右边的 **齿轮 / ⋮ → 添加模块**（Add Modules）
-4. 在模块列表里找到 **Language packs (Preview)** 分类
-5. 勾选 **简体中文**
-6. 点 **安装 / 继续**，等它下完（只有 2.3 MB，很快）
+```
+E:\新建文件夹 (8)\2022.3.62f3c1\Editor\Data\Localization\
+├── zh-hans        ← 2,388,191 字节，13,974 条翻译
+└── zh-hans.po     ← 同上（保险副本，确认能用后可删）
+```
 
-> 如果找不到「添加模块」按钮 → 说明 Hub 没登记这套安装，用下面的备选方案。
+校验过：字节数和 Hub 官方清单登记的**完全一致**，抽查 `"Cancel"→"取消"`、`"Edit"→"编辑"`、`"Window"→"窗口"`。
 
-### 第二步：在 Unity 里切成中文
+> 注意：这个目录**本来不存在**，是新建的。想完全撤销 → 直接删掉 `Localization` 整个文件夹即可，不影响 Unity。
+
+### 你现在只需要做这一步（在 Unity 编辑器里）
 
 1. 打开工程（`E:\My project`）
-2. 顶部菜单 **Edit → Preferences**（编辑 → 首选项）
+2. 顶部菜单 **Edit → Preferences**
 3. 左侧列表选 **Languages**
-4. 勾选 **Editor Language (Experimental)** ← 必须先勾这个，下拉框才会亮
+4. 勾选 **Editor Language (Experimental)** ← **必须先勾这个**，不勾下拉框是灰的
 5. 在 **Editor language** 下拉框里选 **简体中文**
-6. **重启 Unity**（这一步不能省，不重启不生效）
+6. **重启 Unity** ← 不能省，不重启不生效
+
+> ⚠️ **如果第 5 步的下拉框里没有「简体中文」**，说明语言包的文件名和 Unity 期望的不一样。
+> 这时改走官方路线（1 分钟）：
+> 1. 先把 `Localization` 文件夹整个删掉
+> 2. Unity Hub → 安装 → `2022.3.62f3c1` → 齿轮 → **添加模块**
+> 3. 找 **Language packs (Preview)** → 勾 **简体中文** → 安装
+> 4. 回到上面的第 1~6 步
+>
+> Hub 是官方工具，它知道正确的文件名，一定能成。
 
 ### 几个要提前知道的事
 
@@ -264,12 +280,8 @@ Scene 视图里还能看到从车头射出的绿/红射线。按 **Ctrl+S** 保�
 | 想改回英文 | 同一个界面，取消勾选 `Editor Language`，重启即可（语言包不用卸载） |
 | 代码里的报错 | **C# 报错信息默认还是英文**，这是另一套开关（`kEnableCompilerMessagesLocalization`），先别动它 |
 
-> **备选方案**（Hub 装不上时用）：我已经把官方语言包下好了（13,974 条翻译，校验通过），
-> 放在 `%TEMP%\unity-langpack\zh-hans.po`。关掉 Unity Hub 之后告诉我，我用命令行帮你装。
-> 或者你手动放到 `E:\新建文件夹 (8)\2022.3.62f3c1\Editor\Data\Localization\` 目录下（这个目录现在不存在，要新建）。
-
 > ⚠️ 注意：网上那些"Unity 汉化包""Unity 中文补丁"是**第三方改的**，来路不明、版本对不上就会崩。
-> 上面的方法是**官方**的，别去下别的东西。
+> 上面是**官方**语言包，别去下别的东西。
 
 ---
 
@@ -287,8 +299,9 @@ Scene 视图里还能看到从车头射出的绿/红射线。按 **Ctrl+S** 保�
 | `The type or namespace name 'XXX' could not be found` | 脚本没拷全 | 确认 `Assets/Scripts/B/` 和 `Assets/Scripts/Shared/` 都在 |
 | Hub 里项目打不开 | 编辑器没装好 | 回第 1 步重装编辑器 |
 | 中文显示成乱码 | 脚本编码不是 UTF-8 | 用 VS 另存为 UTF-8 |
-| 勾了 `Editor Language` 界面还是英文 | 没重启 / 语言包没装 | 先确认 Hub 里装过 `Language packs`，然后**重启 Unity** |
+| 勾了 `Editor Language` 界面还是英文 | 没重启 / 下拉框里没选到语言 | **重启 Unity**；下拉框里选「简体中文」再重启 |
 | `Preferences` 里找不到 `Languages` | 编辑器版本没带语言包机制 | 你这个版本有，确认是 `2022.3.62f3c1`，别用别的版本打开 |
+| 下拉框里没有「简体中文」 | 语言包文件名和 Unity 期望的不一致 | 删掉 `Localization` 文件夹，改用 Unity Hub 的「添加模块」装（见文末附录） |
 
 ---
 
