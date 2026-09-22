@@ -12,9 +12,16 @@
 clear; clc; close all;
 
 %% ===== 参数（和 Unity 侧保持一致）=====
+% 同一台电脑：UNITY_IP 填 "127.0.0.1"
+% 两台电脑（无线）：UNITY_IP 填 Unity 那台机器的局域网 IP，
+%   在 Unity 机器上开 cmd 跑 ipconfig，找"无线局域网适配器 WLAN"下的 IPv4 地址
 UNITY_IP          = "127.0.0.1";
 MATLAB_LISTEN_PORT = 5005;   % MATLAB 监听（Unity 往这发状态）
 UNITY_LISTEN_PORT  = 5006;   % Unity 监听（MATLAB 往这发指令）
+% 跨机时还要做两件事：
+%   1. 本机的 Windows 防火墙放行 UDP 5005 / 5006（入站）
+%   2. Unity 那台机器的 Inspector 里，把 MatlabUdpBridge 的 matlabHost
+%      改成这台 MATLAB 机器的 IP（不是 127.0.0.1）
 RUN_SECONDS        = 120;    % 跑多久，改小方便调试
 PLOT_EVERY         = 5;      % 每收几包刷新一次图（刷新太频繁会卡）
 
