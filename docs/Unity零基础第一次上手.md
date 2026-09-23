@@ -15,7 +15,7 @@
 | Unity 工程 | ✅ **已建好**：`E:\My project\`（3D 模板，含 SampleScene） |
 | 项目脚本 | ✅ **已帮你复制进去并编译通过**（8 个 .cs，日志零报错） |
 | 中文语言包 | ✅ **已帮你装好**（官方 `language-zh-hans`，2.3 MB，见文末附录） |
-| 代码编辑器 | ⚠️ 没检测到 VS / VS Code，写代码前建议装一个 |
+| 代码编辑器 | ✅ **VS Code 1.139.0 已装好**（含 C# Dev Kit + Unity 扩展），只需在 Unity 里指一下（见文末） |
 
 > 我的 Unity 装在 E 盘，不在 C 盘——第一次我查错了位置，以这里为准。
 > `C:\Program Files\Unity\Hub\Editor\2022.3.62f3c1` 是个空目录，安装残留，不用管。
@@ -292,7 +292,8 @@ E:\新建文件夹 (8)\2022.3.62f3c1\Editor\Data\Localization\
 
 | 现象 | 原因 | 解决 |
 |---|---|---|
-| 双击脚本没反应 | 没装代码编辑器 | 回第 1 步勾上 Visual Studio 模块 |
+| 双击脚本没反应 | Unity 不知道用哪个编辑器打开 | 按文末「附 2」把 External Script Editor 指到 VS Code |
+| VS Code 里没有代码补全 | C# Dev Kit 还在初始化 / 没装扩展 | 等右下角进度走完；或 `Ctrl+Shift+X` 搜 `C# Dev Kit` 确认已启用 |
 | 改了代码没生效 | 没保存 / 编译报错 | VS 里 `Ctrl+S`，回 Unity 看 Console 有没有红色 |
 | 按 ▶ 什么都没发生 | 场景没保存 / 有编译错误 | `Ctrl+S`，先清掉 Console 的红字 |
 | 找不到刚建的物体 | 视角跑偏了 | 在 Hierarchy 里选中它，按 **F** |
@@ -319,6 +320,51 @@ E:\新建文件夹 (8)\2022.3.62f3c1\Editor\Data\Localization\
 - [x] 跑起来一个完整的自动驾驶测试场景
 
 **这就是第 0 周的全部内容。** 接下来按 [`B模块作战手册.md`](B模块作战手册.md) 走第 1 周。
+
+---
+
+## 附 2：代码编辑器（VS Code）—— 不用装 Visual Studio
+
+**结论：只用 VS Code 就够了。** Visual Studio 有 5 GB 以上、装的时候还要弹管理员权限窗口，没必要。
+你工程里已经自带 `com.unity.ide.vscode@1.2.5` 这个包，Unity 官方支持 VS Code。
+
+### 已经帮你装好的（2026-09-23 23:29）
+
+| 项目 | 状态 |
+|---|---|
+| VS Code | ✅ **1.139.0**，装在 `C:\Users\cheng\AppData\Local\Programs\Microsoft VS Code\Code.exe` |
+| C# Dev Kit | ✅ `ms-dotnettools.csdevkit` v3.40.204 |
+| C# | ✅ `ms-dotnettools.csharp` v2.160.4 |
+| Unity | ✅ `visualstudiotoolsforunity.vstuc` v1.3.1（断点调试靠它） |
+
+### 你要做的只有一件事：告诉 Unity 用 VS Code 打开脚本
+
+1. Unity 顶部菜单 **Edit → Preferences**
+2. 左侧选 **External Tools**（外部工具）
+3. **External Script Editor** 下拉框 → 选 **Visual Studio Code**
+4. 如果下拉框里没有 → 选 **Browse...**，手动指到这个文件：
+
+```
+C:\Users\cheng\AppData\Local\Programs\Microsoft VS Code\Code.exe
+```
+
+5. 关掉 Preferences。**在 Unity 里双击任何一个 `.cs` 文件，就会用 VS Code 打开**
+
+### 之后你会得到什么
+
+- 写代码有**智能补全**（输入 `transform.` 会自动列出 `position` / `rotation` 等）
+- 鼠标悬停能看到 Unity API 的说明
+- **断点调试**：VS Code 左侧 Run and Debug → 选 `Unity Editor` → 按 F5 → 回 Unity 按 ▶
+  （第一次可能要等几十秒，扩展要初始化）
+
+### 常见状况
+
+| 现象 | 怎么办 |
+|---|---|
+| 第一次打开很慢 | 正常，C# Dev Kit 在建索引，等右下角进度条走完 |
+| 没有补全 / 全是红线 | 确认 Unity 里 External Script Editor 已指向 VS Code，然后重启两边 |
+| `OmniSharp` 相关报错 | 一般是 Unity 没生成 `.sln` 文件，回 Unity 点 **Assets → Open C# Project** 让它重新生成 |
+| 想换回 Visual Studio | 同一个下拉框改回去即可，VS Code 不用卸载 |
 
 ---
 
