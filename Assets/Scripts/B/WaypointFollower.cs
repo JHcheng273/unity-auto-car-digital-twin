@@ -23,6 +23,10 @@ public class WaypointFollower : MonoBehaviour
     [Tooltip("到终点后是否循环（一般跟随 path 的设置）")]
     public bool usePathLoopSetting = true;
 
+    [Header("绕障偏移（由上层/测试台写入，一般不用手改）")]
+    [Tooltip("临时目标点偏移。零向量 = 不偏移；上层决定绕障时往哪边偏")]
+    public Vector3 targetOffset = Vector3.zero;
+
     [Header("调试")]
     public bool showDebugLog = false;
 
@@ -51,7 +55,7 @@ public class WaypointFollower : MonoBehaviour
         if (path == null || path.Count == 0) return;
 
         Transform self = steeringReference != null ? steeringReference : transform;
-        TargetPoint = path.GetPoint(CurrentWaypointIndex);
+        TargetPoint = path.GetPoint(CurrentWaypointIndex) + targetOffset;
 
         // --- 1. 算距离 ---
         DistanceToTarget = Vector3.Distance(self.position, TargetPoint);
@@ -67,7 +71,7 @@ public class WaypointFollower : MonoBehaviour
         if (reached || overshot)
         {
             AdvanceWaypoint();
-            TargetPoint = path.GetPoint(CurrentWaypointIndex);
+            TargetPoint = path.GetPoint(CurrentWaypointIndex) + targetOffset;
             local = self.InverseTransformPoint(TargetPoint);
             DistanceToTarget = Vector3.Distance(self.position, TargetPoint);
             if (showDebugLog)
@@ -117,7 +121,7 @@ public class WaypointFollower : MonoBehaviour
         if (path == null || path.Count == 0) return;
         // 当前目标点画成黄色大球，方便看车在追哪个点
         Gizmos.color = Color.yellow;
-        Gizmos.DrawSphere(path.GetPoint(CurrentWaypointIndex), 0.6f);
-        Gizmos.DrawLine(transform.position, path.GetPoint(CurrentWaypointIndex));
+        Gizmos.DrawSphere(path.GetPoint(CurrentWaypointIndex) + targetOffset, 0.6f);
+        Gizmos.DrawLine(transform.position, path.GetPoint(CurrentWaypointIndex) + targetOffset);
     }
 }
