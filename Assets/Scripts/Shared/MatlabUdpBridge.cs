@@ -68,6 +68,10 @@ public class MatlabUdpBridge : MonoBehaviour
     public FrontCarDetector detector;
     public WaypointFollower follower;
 
+    [Header("调试")]
+    [Tooltip("勾选后每秒在 Console 打印收发包数，用来确认通信通没通")]
+    public bool logStats = false;
+
     [Header("开关")]
     [Tooltip("关掉就完全不联网，纯本地跑，方便对比")]
     public bool enableNetwork = true;
@@ -86,6 +90,8 @@ public class MatlabUdpBridge : MonoBehaviour
     readonly ConcurrentQueue<string> _inbox = new ConcurrentQueue<string>();
     float _sendTimer;
     float _lastRecvTime;
+    float _lastStatsLog;
+    int _sentCount;
     bool _running;
 
     void Start()
@@ -163,6 +169,14 @@ public class MatlabUdpBridge : MonoBehaviour
             _sendTimer = 0f;
             SendState();
         }
+
+        // 3. 调试统计：每秒报一次收发情况，排查通信问题全靠它
+        if (logStats && Time.time - _lastStatsLog > 1f)
+        {
+            _lastStatsLog = Time.time;
+            Debug.Log($"[UdpBridge] 已发 {_sentCount} 包 / 已收 {PacketsReceived} 包，" +
+                      $"MATLAB 连接 = {(IsConnected ? "是" : "否")}");
+        }
     }
 
     void SendState()
@@ -176,7 +190,7 @@ public class MatlabUdpBridge : MonoBehaviour
             y = Round(self.position.y),
             z = Round(self.position.z),
             yaw = Round(self.eulerAngles.y),
-            speed = Round(carRigidbody != null ? carRigidbody.velocity.magnitude : 0f),
+            speed = Round(GetSpeed(self)),
             steer = follower != null ? Round(follower.Steering) : 0f,
             front_dist = detector != null ? Round(detector.FrontCarDistance) : -1f,
             wp = follower != null ? follower.CurrentWaypointIndex : -1,
@@ -190,11 +204,42 @@ public class MatlabUdpBridge : MonoBehaviour
         try
         {
             _sendClient.Send(bytes, bytes.Length, matlabHost, matlabListenPort);
+            _sentCount++;
         }
         catch (Exception e)
         {
             Debug.LogWarning($"[UdpBridge] 发送失败：{e.Message}");
         }
+    }
+
+    float _lastSampleTime;
+    Vector3 _lastPos;
+    bool _hasSample;
+
+    /// <summary>
+    /// 速度来源：有 Rigidbody 就用物理速度；没有（运动学小车）就用两次采样之间的位置差分。
+    /// 原来写死读 Rigidbody，导致用 transform.Translate 移动的车速度永远是 0 —— MATLAB 那边的曲线会是一条平线。
+    /// </summary>
+    float GetSpeed(Transform self)
+    {
+        if (carRigidbody != null) return carRigidbody.velocity.magnitude;
+
+        float now = Time.time;
+        if (!_hasSample)
+        {
+            _hasSample = true;
+            _lastSampleTime = now;
+            _lastPos = self.position;
+            return 0f;
+        }
+
+        float dt = now - _lastSampleTime;
+        _lastSampleTime = now;
+        if (dt <= 0.0001f) return 0f;
+
+        float v = (self.position - _lastPos).magnitude / dt;
+        _lastPos = self.position;
+        return v;
     }
 
     /// <summary>保证 JSON 里不出现 NaN / Infinity（MATLAB 的 jsondecode 会报错）</summary>
