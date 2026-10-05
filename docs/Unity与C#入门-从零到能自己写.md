@@ -558,8 +558,902 @@ if (Input.GetKey(KeyCode.Space)) throttle = 0f;
 
 ---
 
-## 五、接下来的课（学到再补详细内容）
+## 五、第 4 课：让车自己朝目标点开
 
-第 4 课：**向量运算、距离** → 让车自己朝一个目标点开。这是 `WaypointFollower` 的第一步，也是"自动驾驶"真正开始的地方。
+**这一课的目标**：不再用键盘。车自己看目标、自己算方向、自己开过去。这是 `WaypointFollower` 的第一步。
+
+### 5.1 核心问题：车怎么知道该往哪打方向
+
+车看到的世界是**世界坐标**（原点是场景中心），这没什么用 —— 车不关心目标在世界哪个角落，只关心**目标在我左边还是右边、前面还是后面**。
+
+Unity 提供了一个方法做这个换算：
+
+```csharp
+Vector3 local = transform.InverseTransformPoint(target.position);
+```
+
+`InverseTransformPoint` = "把世界坐标的点，换算成**以我的位置为原点、以我的朝向为前方**的坐标"。
+
+换算完就好办了：
+
+| `local` 的值 | 含义 |
+|---|---|
+| `local.x > 0` | 目标在我**右边** |
+| `local.x < 0` | 目标在我**左边** |
+| `local.z > 0` | 目标在我**前面** |
+| `local.z < 0` | 我已经**开过头**了 |
+
+### 5.2 角度 → steer
+
+```csharp
+float angleDeg = Mathf.Atan2(local.x, local.z) * Mathf.Rad2Deg;
+```
+
+这一行算出"**目标偏离我车头多少度**"：
+
+| 情况 | `local` | `angleDeg` |
+|---|---|---|
+| 目标正前方 | `(0, 10)` | `0°` |
+| 目标右前方 | `(5, 5)` | `45°` |
+| 目标正右方 | `(10, 0)` | `90°` |
+| 目标左前方 | `(-5, 5)` | `-45°` |
+
+正数 = 该往右打，负数 = 该往左打。
+
+> **为什么用 `Atan2` 而不是 `Vector3.Angle`？**
+> `Vector3.Angle` 只给你"差多少度"，**不带正负号** —— 它不知道是左还是右，你没法判断该往哪打。
+> `Atan2` 保留符号，这才是能用的。
+
+再变成第 3 课那两个数字：
+
+```csharp
+Steer = Mathf.Clamp(angleDeg / fullSteerAngle, -1f, 1f);
+```
+
+- `angleDeg / fullSteerAngle` —— 偏 45° 时刚好满舵 1.0；偏 22.5° 时半舵 0.5
+- `Mathf.Clamp(..., -1f, 1f)` —— **夹住**，不管偏 200° 还是 500°，都不会超出 -1 ~ 1
+
+### 5.3 完整代码：`AutoDrive.cs`
+
+```csharp
+using UnityEngine;
+
+public class AutoDrive : MonoBehaviour
+{
+    [Header("速度")]
+    public float forwardSpeed = 5f;      // 前进速度（米/秒）
+    public float turnSpeed = 120f;       // 最大转向速度（度/秒）
+
+    [Header("要去哪（把 Target 拖进来）")]
+    public Transform target;
+
+    [Header("偏到这个角度就打死方向盘")]
+    public float fullSteerAngle = 45f;
+
+    [Header("离目标多近就算到了")]
+    public float arrivalRadius = 2f;
+
+    // 这两个数字就是第 3 课学的 throttle / steer，
+    // 只是现在由代码算出来，不再由键盘填
+    public float Throttle { get; private set; }
+    public float Steer    { get; private set; }
+
+    void Update()
+    {
+        if (target == null) return;
+
+        // ===== 第 1 步：把目标点换算到"我自己的坐标系"里 =====
+        Vector3 local = transform.InverseTransformPoint(target.position);
+
+        // ===== 第 2 步：算出目标偏了我车头多少度 =====
+        float angleDeg = Mathf.Atan2(local.x, local.z) * Mathf.Rad2Deg;
+
+        // ===== 第 3 步：角度 → steer（夹在 -1 ~ 1 之间） =====
+        Steer = Mathf.Clamp(angleDeg / fullSteerAngle, -1f, 1f);
+
+        // ===== 第 4 步：离目标够近了就停车 =====
+        float distance = local.magnitude;
+        Throttle = distance < arrivalRadius ? 0f : 1f;
+
+        // ===== 第 5 步：还是第 3 课那条公式 =====
+        transform.Rotate(0f, Steer * turnSpeed * Time.deltaTime, 0f);
+        transform.Translate(0f, 0f, Throttle * forwardSpeed * Time.deltaTime);
+
+        // 调试打印
+        if (Time.frameCount % 30 == 0)
+            Debug.Log($"距离 {distance:F1} 米 | 偏角 {angleDeg:F1}° | steer {Steer:F2} | throttle {Throttle:F0}");
+    }
+
+    void OnDrawGizmosSelected()
+    {
+        if (target == null) return;
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawLine(transform.position, target.position);
+        Gizmos.DrawWireSphere(target.position, arrivalRadius);
+    }
+}
+```
+
+### 5.4 怎么用（关键一步别漏）
+
+1. Hierarchy 右键 → `3D Object` → `Sphere`，改名 `Target`，位置设成 `(10, 0, 10)`
+2. 选中 `Cube` → `Add Component` → `Auto Drive` → `Target` 槽位拖上那个球
+3. **⚠️ 在 Inspector 里把 `MyFirst Car` 组件左边的勾去掉 —— 停用它**
+
+> **为什么必须停用？** 两个脚本都在 `Update` 里移动同一个物体，会打架 —— 车会抖得像抽筋。
+> **把"输入源"换掉，而不是删掉** —— 这正是第 3 课那句话的价值：车不关心是谁在开。
+
+### 5.5 两个高频困惑（我踩过，你也一定会问）
+
+**困惑 1：为什么车离目标还有一两米就停了？**
+
+因为 `arrivalRadius` 就是"**够近了就算到了**"的阈值：
+
+```csharp
+Throttle = distance < arrivalRadius ? 0f : 1f;
+```
+
+想停得更近就把 `Arrival Radius` 改小。**但不能太小** —— 车的最小转弯半径是
+
+```
+R = 速度 ÷ 角速度 = forwardSpeed ÷ (turnSpeed × π/180)
+```
+
+比如 `5 ÷ (120 × π/180) = 2.39 米`。若 `Arrival Radius` 远小于这个数，车会**绕着目标打转，永远停不下来**。
+
+> **验证实验**：把 `Forward Speed` 拖到 `20` → 转弯半径变成 `9.5 米` ≫ 到达半径 `2 米` → 车绕大圈停不下来。
+> 这就是自动驾驶最经典的问题：**减速能力和转弯能力必须匹配**。项目里 `AutoDriver` 的 `brakeDistance` 解决的就是同类麻烦。
+
+**困惑 2：为什么改了 Inspector 里的参数没反应？**
+
+**先检查这个变量在代码里到底被引用了没有。**
+
+```csharp
+Steer = Mathf.Clamp(angleDeg / 10, -1f, 1f);   // ❌ 写死了 10，fullSteerAngle 变成摆设
+Steer = Mathf.Clamp(angleDeg / fullSteerAngle, -1f, 1f);   // ✅ 这才是对的
+```
+
+> **`public` + `[Header]` 只让变量在 Inspector 里"看得见"，不代表代码在"用它"。**
+> 排查方法：VS Code 里 `Ctrl + F` 搜变量名，**出现次数 = 1（只有声明那行）就是摆设**。
+
+**还有第二层**：`fullSteerAngle` 只在**小角度**才看得出效果。因为 `steer` 被 `Clamp` 到 ±1 之后会**饱和** —— 车偏 45° 以上时，除以 45 和除以 10 结果都是 1，**完全一样**。
+
+| 偏离角 | `fullSteerAngle=45` | `fullSteerAngle=10` |
+|---|---|---|
+| 5° | 0.11 | 0.50 |
+| 10° | 0.22 | **1.00**（饱和） |
+| 30° | 0.67 | 1.00 |
+| 45° 以上 | 1.00 | 1.00 |
+
+**要看出区别，得让车已经大致对准目标**。比如把 `Target` 放到 `(1, 0, 20)`（偏角约 2.9°），再切 `Full Steer Angle`。
+
+### 5.6 实验
+
+| # | 做什么 | 看什么 |
+|---|---|---|
+| 1 | `Target` 位置改成 `(-10, 0, 10)` | 车改成往**左前方**开（`angleDeg` 变负） |
+| 2 | `Full Steer Angle` 改成 `10` | 小角度时更敏感；大角度时没区别（见 5.5） |
+| 3 | `Forward Speed` 改成 `20` | 转弯半径变大，**绕圈停不下来** |
+| 4 | Play 起来**手动拖动** `Target` | 车**实时追着球跑** —— 这就是闭环控制 |
+| 5 | 选中车看 Scene 视图 | 黄线和圆圈 = 感知范围的可视化（`PathVisualizer` 干的就是这个） |
+
+---
+
+## 六、第 5 课：平滑转向（插值）
+
+**这一课的目标**：解决第 4 课留下的手感问题 —— **现在的车转向太生硬**。
+
+### 6.1 问题在哪
+
+现在的代码：
+
+```csharp
+Steer = Mathf.Clamp(angleDeg / fullSteerAngle, -1f, 1f);
+```
+
+`Steer` 这一帧是多少，方向盘**立刻**就是多少 —— 从 0 直接跳到 1，零过渡。
+
+真车的方向盘**打不了那么快**：从正中到打死至少要一两秒。所以现在的车看起来像在"抽筋"，不像在开车。
+
+### 6.2 解决工具：`Mathf.MoveTowards`
+
+```csharp
+Mathf.MoveTowards(当前值, 目标值, 这一帧最多走多少)
+```
+
+它让数值**一步一步**靠近目标，每帧最多走固定的一小步。
+
+**关键**：它**永远不会超过目标值** —— 走到了就停住。这一点和 `Mathf.Lerp` 完全不同：
+
+| 方法 | 行为 | 用在哪 |
+|---|---|---|
+| `Mathf.Lerp(a, b, t)` | 每次只走"剩余距离的 t 倍"，**永远追不上，只能无限接近** | 摄像机跟随、UI 渐入 |
+| `Mathf.MoveTowards(a, b, maxDelta)` | 每帧走固定步长，**能追上并且停住** | **方向盘、速度这类有物理上限的量** |
+
+方向盘转速有上限，所以用 `MoveTowards`。
+
+### 6.3 改法：加一层"实际方向盘"
+
+```csharp
+[Header("转向")]
+public float fullSteerAngle = 45f;
+
+[Tooltip("方向盘每秒最多变化多少。越小越肉（像大卡车），越大越灵敏")]
+public float steerRate = 2f;
+
+float _targetSteer;   // 这一帧"想打多少方向"
+```
+
+`Update` 里把第 3 步拆成两半：
+
+```csharp
+// ---- 3a. 想要的方向（瞬间算出来的理想值）----
+_targetSteer = Mathf.Clamp(angleDeg / fullSteerAngle, -1f, 1f);
+
+// ---- 3b. 实际的方向（慢慢靠过去，这就是"平滑"）----
+Steer = Mathf.MoveTowards(Steer, _targetSteer, steerRate * Time.deltaTime);
+```
+
+**注意 3b 又是那条老公式**：`每秒变化量 × Time.deltaTime`。你现在应该能一眼认出来了。
+
+调试打印也加上对比：
+
+```csharp
+Debug.Log($"偏角 {angleDeg:F1}° | 想打 {_targetSteer:F2} | 实际 {Steer:F2}");
+```
+
+### 6.4 完整代码
+
+```csharp
+using UnityEngine;
+
+public class AutoDrive : MonoBehaviour
+{
+    [Header("速度")]
+    public float forwardSpeed = 5f;
+    public float turnSpeed = 120f;
+
+    [Header("要去哪")]
+    public Transform target;
+
+    [Header("转向")]
+    public float fullSteerAngle = 45f;
+
+    [Tooltip("方向盘每秒最多变化多少。1 = 一秒打死；0.3 = 三秒多打死（像大卡车）")]
+    public float steerRate = 0.5f;
+
+    [Header("到达判定")]
+    public float arrivalRadius = 2f;
+
+    public float Throttle { get; private set; }
+    public float Steer    { get; private set; }
+
+    float _targetSteer;   // 这一帧"想打多少方向"
+
+    void Update()
+    {
+        if (target == null) return;
+
+        Vector3 local = transform.InverseTransformPoint(target.position);
+        float angleDeg = Mathf.Atan2(local.x, local.z) * Mathf.Rad2Deg;
+
+        // ---- 3a. 想要的方向 ----
+        _targetSteer = Mathf.Clamp(angleDeg / fullSteerAngle, -1f, 1f);
+
+        // ---- 3b. 实际的方向：朝想要的方向慢慢靠过去 ----
+        Steer = Mathf.MoveTowards(Steer, _targetSteer, steerRate * Time.deltaTime);
+
+        float distance = local.magnitude;
+        Throttle = distance < arrivalRadius ? 0f : 1f;
+
+        transform.Rotate(0f, Steer * turnSpeed * Time.deltaTime, 0f);
+        transform.Translate(0f, 0f, Throttle * forwardSpeed * Time.deltaTime);
+
+        if (Time.frameCount % 30 == 0)
+            Debug.Log($"偏角 {angleDeg:F1}° | 想打 {_targetSteer:F2} | 实际 {Steer:F2}");
+    }
+
+    void OnDrawGizmosSelected()
+    {
+        if (target == null) return;
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawLine(transform.position, target.position);
+        Gizmos.DrawWireSphere(target.position, arrivalRadius);
+    }
+}
+```
+
+### 6.5 补充：`Quaternion` 是什么
+
+Unity 里表示"旋转"有两种方式：
+
+| 方式 | 长什么样 | 特点 |
+|---|---|---|
+| **欧拉角**（你在 Inspector 里看到的） | `(0, 45, 0)` 三个度数 | 直观，但**不能直接做插值** |
+| **`Quaternion`**（代码里用的） | `Quaternion.Euler(0, 45, 0)` | 不直观，但**插值安全、不会万向锁** |
+
+常用三个：
+
+```csharp
+Quaternion.LookRotation(方向)              // 生成"面朝这个方向"的旋转
+Quaternion.Slerp(当前, 目标, t)             // 平滑转头（每次都走剩余距离的 t 倍）
+Quaternion.RotateTowards(当前, 目标, 度数)  // 限制转头速度，和 MoveTowards 一个道理
+```
+
+> **怎么选？**
+> - 你要**限制转向速率**（像真车打方向盘）→ 用 `Mathf.MoveTowards` 平滑 `Steer`，也就是 6.3 的做法 ✓
+> - 你要**让物体直接平滑转头**（像摄像机、像游戏里的小怪）→ 用 `Quaternion.Slerp` / `RotateTowards`
+>
+> **你的车属于前者** —— 因为方向盘转速是真实存在的物理限制，而且数字孪生里 `Steer` 是要发给 MATLAB 的物理量，得保留它的物理意义。
+
+### 6.6 实验
+
+| # | 做什么 | 看什么 |
+|---|---|---|
+| 1 | `Steer Rate` 改成 `0.5` | 转向极肉，像开大卡车，拐大弯要很久 |
+| 2 | `Steer Rate` 改成 `20` | 又变回原来那种生硬 |
+| 3 | `Steer Rate` 改成 `5` | 比较接近真车手感 |
+| 4 | 盯 Console 里 `想打` 和 `实际` 两列 | 刚起步时差很大，之后**实际值追着想打值走** —— 这就是"平滑" |
+
+**实验 4 是重点**：你会亲眼看到"理想值"和"实际值"的分离与追赶。这个概念在控制工程里叫**一阶惯性环节** —— 你项目里 MATLAB 那边 `TAU = 1.2` 那个数字，描述的就是同一件事。
+
+### 6.7 为什么有时候"看不出平滑效果"（实测踩到的坑）
+
+写完 6.3 的代码跑起来，你可能会发现 Console 里是这样的：
+
+```
+偏角 -71.0° | 想打 -1.00 | 实际 -1.00
+偏角 -62.0° | 想打 -1.00 | 实际 -1.00
+偏角 -1.3°  | 想打 -0.03 | 实际 -0.03
+偏角 -0.2°  | 想打 -0.01 | 实际 -0.01
+```
+
+**`想打` 和 `实际` 每一行都完全一样** —— 那 `MoveTowards` 岂不是白写了？
+
+**不是白写，是参数太大。**
+
+`MoveTowards` 每帧最多走 `steerRate × deltaTime`。只有当 **`steerRate` 比"`想打` 自己的变化速度"更慢**时，`实际` 才会落后于 `想打`，平滑才看得见。
+
+上面那组数据里：
+
+- `想打` 从 -1.00 降到 -0.03 用了约 1.8 秒 → 变化速度约 **0.54 /秒**
+- 而 `steerRate = 2` → 每帧能走 `2 × 0.0167 = 0.033`，**比 0.54 快得多**
+- 所以 `实际` 每一帧都能追平 `想打`，看起来就像没做平滑
+
+**记住这条规律**：
+
+> **平滑参数只有在"比被平滑对象的变化速度更慢"时才起作用。**
+
+**分级实验（一定要做）**：
+
+| `Steer Rate` | 打死方向盘要多久 | Console 里会看到 |
+|---|---|---|
+| `5` | 0.2 秒 | `实际` 死死贴着 `想打`，**等于没做平滑** |
+| `2` | 0.5 秒 | 只在起步那 0.5 秒有一点滞后，之后贴死 |
+| `0.5` | 2 秒 | **`实际` 明显落后于 `想打`** —— 这就是你要的 |
+| `0.3` | 3.3 秒 | 滞后很明显，转向像开大卡车 |
+
+> **物理意义**：`steerRate` 其实就是"**方向盘从正中打到打死需要几秒**"的倒数。
+> 真车大概 1~2 秒，所以 `0.5 ~ 1.0` 是比较真实的范围。
+>
+> 调好之后你会发现车开始**画蛇（振荡）** —— 因为它来不及修正就冲过头了。
+> 这不是 bug，是真车的真实行为，也正是你 MATLAB 那边一阶惯性模型要复现的东西。
+
+---
+
+## 七、第 6 课：脚本之间传数据（`GetComponent` 与门面模式）
+
+**这一课的目标**：让两个脚本协作 —— 一个算"往哪开"，一个管"怎么动"。这是 `BModuleFacade` 的原理。
+
+### 7.1 为什么要把职责拆开
+
+现在 `AutoDrive` 一个人干了两件事：
+
+1. 算"该往哪打、该给多少油门"（**决策**）
+2. 直接 `transform.Rotate` / `Translate` 把车挪走（**执行**）
+
+这样写有两个麻烦：
+
+- 想换成**键盘开**，就得把移动代码再抄一遍
+- 想换成 **MATLAB 下发的指令**，又得抄一遍
+
+**拆开就好了**：
+
+| 脚本 | 职责 | 知道什么 |
+|---|---|---|
+| `CarController` | **执行**：给我 `steering` / `motor` / `brake`，我让车动 | 只知道"怎么动" |
+| `AutoDrive` | **决策**：算出 `steering` / `motor` | 只知道"往哪开" |
+
+**这就是你项目里定好的接口契约 `carController.SetInput(steering, motor, brake)`。**
+
+### 7.2 `GetComponent<T>()`：从自己身上找组件
+
+两个脚本都挂在**同一个 GameObject**（Cube）上。要让 A 拿到 B，用：
+
+```csharp
+CarController car = GetComponent<CarController>();
+```
+
+读作："**从我自己身上，找 `CarController` 这个类型的组件**"。
+
+**三条要点**：
+
+1. **一定要在 `Start()` 里找一次，存起来**，不要每帧 `GetComponent`
+   （每帧找一次 = 每秒找 60 次，纯浪费）
+2. 找不到会返回 `null`，所以**一定要判空**，否则报 `NullReferenceException`
+3. 如果组件在**子物体**上，用 `GetComponentInChildren<T>()`
+
+### 7.3 完整代码
+
+**新建 `CarController.cs`**：
+
+```csharp
+using UnityEngine;
+
+/// <summary>
+/// 车辆执行器：只负责"把输入变成运动"。
+/// 不关心输入是谁给的（键盘 / 自动驾驶员 / MATLAB 都行）。
+/// </summary>
+public class CarController : MonoBehaviour
+{
+    [Header("车辆参数")]
+    public float maxSpeed = 5f;         // 最大前进速度（米/秒）
+    public float maxTurnSpeed = 120f;   // 最大转向角速度（度/秒）
+
+    // ---- 输入：外部写进来，外部也读得到 ----
+    /// <summary>方向盘：-1 左打满 ~ +1 右打满</summary>
+    public float Steering { get; private set; }
+    /// <summary>油门：0 不动 ~ 1 全速</summary>
+    public float Motor { get; private set; }
+    /// <summary>刹车</summary>
+    public bool Braking { get; private set; }
+
+    /// <summary>外部用这个来开车 —— 这就是项目的接口契约</summary>
+    public void SetInput(float steering, float motor, bool brake = false)
+    {
+        Steering = Mathf.Clamp(steering, -1f, 1f);
+        Motor    = Mathf.Clamp01(motor);
+        Braking  = brake;
+    }
+
+    void Update()
+    {
+        float motor = Braking ? 0f : Motor;
+
+        transform.Rotate(0f, Steering * maxTurnSpeed * Time.deltaTime, 0f);
+        transform.Translate(0f, 0f, motor * maxSpeed * Time.deltaTime);
+    }
+}
+```
+
+**三个新东西**：
+
+- `Mathf.Clamp01(x)` —— 把值夹到 `0 ~ 1`（等于 `Clamp(x, 0f, 1f)`，写起来短）
+- `bool brake = false` —— **默认参数**。调用时可以只写两个参数，第三个不写就是 `false`
+- `public float Steering { get; private set; }` —— **外部能读、只有自己（和调用 `SetInput` 的）能写**
+
+**把 `AutoDrive.cs` 改成这样**：
+
+```csharp
+using UnityEngine;
+
+public class AutoDrive : MonoBehaviour
+{
+    [Header("要去哪")]
+    public Transform target;
+
+    [Header("转向")]
+    public float fullSteerAngle = 45f;
+    public float steerRate = 0.5f;
+
+    [Header("到达判定")]
+    public float arrivalRadius = 2f;
+
+    // 同一个物体上的车辆执行器
+    CarController car;
+
+    public float Throttle { get; private set; }
+    public float Steer    { get; private set; }
+
+    float _targetSteer;
+
+    void Start()
+    {
+        // ★ 关键一句：从我身上找到 CarController
+        car = GetComponent<CarController>();
+
+        if (car == null)
+            Debug.LogError("[AutoDrive] 这个物体上没有 CarController！请先 Add Component。", this);
+    }
+
+    void Update()
+    {
+        if (car == null || target == null) return;
+
+        Vector3 local = transform.InverseTransformPoint(target.position);
+        float angleDeg = Mathf.Atan2(local.x, local.z) * Mathf.Rad2Deg;
+
+        _targetSteer = Mathf.Clamp(angleDeg / fullSteerAngle, -1f, 1f);
+        Steer = Mathf.MoveTowards(Steer, _targetSteer, steerRate * Time.deltaTime);
+
+        float distance = local.magnitude;
+        Throttle = distance < arrivalRadius ? 0f : 1f;
+
+        // ★ 不再自己移动！把两个数字交给 CarController
+        car.SetInput(Steer, Throttle);
+
+        if (Time.frameCount % 30 == 0)
+            Debug.Log($"偏角 {angleDeg:F1}° | 想打 {_targetSteer:F2} | 实际 {Steer:F2}");
+    }
+
+    void OnDrawGizmosSelected()
+    {
+        if (target == null) return;
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawLine(transform.position, target.position);
+        Gizmos.DrawWireSphere(target.position, arrivalRadius);
+    }
+}
+```
+
+**怎么装配**：
+
+1. 选中 `Cube` → `Add Component` → 搜 `Car Controller` → 加上
+2. **把 `My First Car` 组件删掉**（右键组件名 → `Remove Component`）—— 它已经完成历史使命了
+3. Cube 上现在应该有：`Car Controller` + `Auto Drive`（`Transform` / 网格那几个不算）
+4. Play
+
+**验证拆分成功**：车的行为应该**和第 5 课一模一样**。
+如果一样 → 说明"决策"和"执行"干净地分开了，`AutoDrive` 只是换了个方式把数字递出去。
+
+### 7.4 这个设计的价值：换输入源，车不用改
+
+现在 `CarController` 完全不知道是谁在开车。所以：
+
+```csharp
+// 自动驾驶员
+car.SetInput(autoDrive.Steer, autoDrive.Throttle);
+
+// 键盘
+car.SetInput(steer, throttle);
+
+// MATLAB 下发（第 8 课会做）
+car.SetInput(cmd.steer_des, cmd.v_des / maxSpeed);
+```
+
+**三行代码，同一个车，一行都不用改。**
+
+> 这就是软件工程里的**"依赖倒置"** —— 高层（决策）和低层（执行）都依赖中间那个抽象接口，而不是互相依赖。
+> 你不用记这个名词，记住"**车不关心是谁在开**"就够了。
+
+### 7.5 门面模式：`BModuleFacade` 的原理
+
+你项目里已经有这么一个脚本了（`Assets/Scripts/B/BModuleFacade.cs`），它就是**门面模式**：
+
+```csharp
+public class BModuleFacade : MonoBehaviour
+{
+    public FrontCarDetector detector;
+    public WaypointFollower follower;
+
+    // 转发，不自己算
+    public float Steering => follower != null ? follower.Steering : 0f;
+    public bool HasFrontCar => detector != null && detector.HasFrontCar;
+    public float FrontCarDistance => detector != null ? detector.FrontCarDistance : float.MaxValue;
+
+    public bool NeedBrake => HasFrontCar && FrontCarDistance < safeDistance;
+    public bool NeedSlowDown => HasFrontCar && FrontCarDistance < slowDistance;
+
+    void OnValidate()
+    {
+        // 在 Inspector 里改东西时自动跑，省得手拖
+        if (detector == null) detector = GetComponentInChildren<FrontCarDetector>();
+        if (follower == null) follower = GetComponentInChildren<WaypointFollower>();
+    }
+}
+```
+
+**四个值得学的写法**：
+
+| 写法 | 意思 |
+|---|---|
+| `=> 表达式`（表达式体属性） | 一行写完的属性，**每次读的时候现算**，不占内存 |
+| `x != null ? x.Value : 默认值` | **判空兜底**，防止对面没拖进来就崩 |
+| `GetComponentInChildren<T>()` | 从自己和所有子物体里找（比 `GetComponent` 范围大） |
+| `OnValidate()` | 一个特殊函数，**在 Inspector 里改任何东西时自动执行** |
+
+**门面模式解决什么问题**：
+
+> C（控制模块）只认 `BModuleFacade` 一个脚本。
+> B 以后怎么改算法、拆成几个脚本、加什么新功能 —— **只要不改这里的属性名，C 的代码一行都不用动。**
+
+你现在的 `CarController` 扮演的就是同一个角色：**对外只暴露 `SetInput`，内部怎么实现随便改。**
+
+### 7.6 实验
+
+| # | 做什么 | 看什么 |
+|---|---|---|
+| 1 | 把 `AutoDrive` 组件**禁用**（Inspector 里去掉勾） | 车**不会停**，而是沿着最后那次 `Steer` 一直转圈（见下方说明） |
+| 2 | 把 `CarController` 的 `Max Speed` 改成 `15` | 车变快，但**转向逻辑完全没变** —— 决策和执行是独立的 |
+| 3 | 把 `CarController` 的 `Max Turn Speed` 改成 `30` | 转向变慢，车拐大弯 |
+| 4 | 在 `CarController.Update` 里加一句 `Debug.Log(Motor);` | 看到 `AutoDrive` 喂进来的油门值 |
+| 5 | 把 `CarController` 组件**删掉**，再 Play | Console 报你写的那句红字 `[AutoDrive] 这个物体上没有 CarController！` |
+
+**实验 1 的正确预期（很容易想错）**：
+
+禁用 `AutoDrive` 之后，车**不会停住** —— 因为 `SetInput` 是"**写一次、一直保持**"的语义：
+
+- `AutoDrive` 不再执行 → 没人再调 `SetInput`
+- `CarController.Motor` **保留着最后一次写入的值**（比如 `1`）
+- `CarController.Update` 还在跑 → 车继续用旧指令往前开、往旧方向转
+
+所以你会看到车**沿着一个圈一直转**。
+
+> 这在工程上叫"**指令保持**"。真车松油门后也会滑行，所以不算完全错；
+> 但如果决策层挂了（比如 MATLAB 断连），车就会一直用旧指令跑下去 —— 这是**危险**的。
+> 真正的安全做法是加一个"看门狗"：超过 N 秒没收到新指令就自动刹车。
+> 你项目里 `MatlabUdpBridge` 的"连接丢失检测"就是这个思路。
+
+**实验 5 的关键：必须"删除"，不能只"禁用"**
+
+| 操作 | `GetComponent<CarController>()` 返回什么 | 为什么 |
+|---|---|---|
+| **禁用**（去掉勾，组件变灰） | **还是能拿到**（非 null） | `enabled = false` 只是让 Unity 不再调它的 `Update`，组件本身还在 |
+| **删除**（右键 → Remove Component） | **null** | 组件真的不在了 |
+
+所以想看那句红字，必须真的 `Remove Component`。做完记得 `Ctrl + Z` 撤销，
+或者重新 `Add Component`（参数就是默认值，不会丢东西）。
+
+---
+
+## 八、第 7 课：让车跑过一串路标点
+
+**这一课的目标**：从"追一个点"升级到"跑一条路"。这是 `WaypointPath` 的完整原理，也是"跑完整圈"的最后一块拼图。
+
+### 8.1 数组和 `List`：怎么存一串东西
+
+要存 4 个路标点，不能写 4 个变量（`wp0`、`wp1`、`wp2`、`wp3`）—— 那加第 5 个点就得改代码。
+
+C# 有两种"容器"：
+
+```csharp
+Transform[] arr = new Transform[5];              // 数组：长度固定
+List<Transform> list = new List<Transform>();    // List：可以随时增删
+```
+
+| | 数组 `T[]` | `List<T>` |
+|---|---|---|
+| 声明 | `Transform[] a = new Transform[4];` | `List<Transform> l = new List<Transform>();` |
+| 长度 | `a.Length` | `l.Count` |
+| 能加元素吗 | **不能**（长度写死） | **能**，`l.Add(x)` |
+| 要额外 using 吗 | 不用 | **要**：`using System.Collections.Generic;` |
+| 在 Inspector 里能拖吗 | 能 | 能，而且能拖动排序 |
+
+**结论：路标点用 `List<Transform>`** —— 因为你想随时加一个点。
+
+> **`<Transform>` 是什么？** 这叫**泛型** —— 尖括号里填"这个 List 装什么类型"。
+> `List<Transform>` 装 Transform，`List<int>` 装整数。**装错类型编译器直接拦你。**
+
+### 8.2 `for` 循环：把一串东西挨个过一遍
+
+```csharp
+for (int i = 0; i < list.Count; i++)
+{
+    Debug.Log($"第 {i} 个点：{list[i].name}");
+}
+```
+
+拆成三段看：
+
+| 部分 | 写的是 | 意思 |
+|---|---|---|
+| `int i = 0` | 初始化 | 从第 0 个开始 |
+| `i < list.Count` | 继续条件 | 只要还没到头就继续 |
+| `i++` | 步进 | 每次加 1 |
+
+**新手最容易错的：下标从 0 开始。**
+
+一个有 4 个元素的 `List`，合法的下标是 `0 1 2 3`，**没有 4**。
+访问 `list[4]` 会直接抛 `ArgumentOutOfRangeException` 让程序崩掉。
+
+所以条件永远写 `i < list.Count`，**不要写 `i <= list.Count`**。
+
+（还有个更省事的写法叫 `foreach`，但你先习惯 `for` —— 因为下面要"跳过第 2 个点"这种操作时，`for` 才做得到。）
+
+### 8.3 写 `MyWaypointPath.cs`
+
+> **⚠️ 先读这段 —— 这是我今天刚帮你填的一个坑。**
+>
+> 你的工程里已经有 `Assets/Scripts/B/WaypointPath.cs`（项目正式版），
+> 里面有一个 `public class WaypointPath`。
+> 你在 `Assets/` 根目录又建了一个**同名类** → Unity 报
+> **`CS0101`：命名空间 "" 已经包含 "WaypointPath" 的定义** → **整个工程编译失败**。
+>
+> **最坑的地方**：编译失败后 Unity 不会崩，它会**继续用上一次编译成功的旧 dll 跑**。
+> 所以你 Play 起来一切正常，但**你新写的代码一行都没生效**。
+>
+> **自己怎么判断编译到底成没成功？** 看这个文件的时间戳：
+> ```
+> E:\My project\Library\ScriptAssemblies\Assembly-CSharp.dll
+> ```
+> 如果它比你的 `.cs` 文件**旧**，就说明编译失败了 —— Unity 还在跑旧代码。
+> （更直接的：Unity 顶部菜单栏右侧有个转圈图标，转完不停就是没编过；Console 里有红字就是没编过。）
+>
+> **所以这个学习版叫 `MyWaypointPath`** —— 文件名和类名必须**一起**叫这个。
+> 这就是第 1 课那条铁律的实战版：**类名在整个工程里只能出现一次。**
+
+**新建 `MyWaypointPath.cs`**：
+
+```csharp
+using System.Collections.Generic;
+using UnityEngine;
+
+/// <summary>
+/// 路径点容器：只负责"存点"和"报点"，不关心谁在用。
+/// 叫 My... 是为了不和工程里 Assets/Scripts/B/WaypointPath.cs 撞类名。
+/// </summary>
+public class MyWaypointPath : MonoBehaviour
+{
+    [Header("路径点（按顺序）")]
+    public List<Transform> waypoints = new List<Transform>();
+
+    [Header("设置")]
+    [Tooltip("到终点后是否回到第 0 个点循环跑")]
+    public bool loop = true;
+    [Tooltip("距离目标点小于这个值就算到达")]
+    public float arrivalRadius = 3f;
+
+    /// <summary>一共有几个点</summary>
+    public int Count => waypoints.Count;
+
+    /// <summary>取第 index 个点的世界坐标（越界自动夹紧，不会崩）</summary>
+    public Vector3 GetPoint(int index)
+    {
+        if (waypoints == null || waypoints.Count == 0) return transform.position;
+
+        int i = Mathf.Clamp(index, 0, waypoints.Count - 1);
+        if (waypoints[i] == null) return transform.position;
+
+        return waypoints[i].position;
+    }
+
+    /// <summary>下一个点的下标（到了最后一个点：循环就回 0，不循环就原地不动）</summary>
+    public int NextIndex(int index)
+    {
+        if (waypoints == null || waypoints.Count == 0) return 0;
+        if (index + 1 >= waypoints.Count) return loop ? 0 : index;
+        return index + 1;
+    }
+}
+```
+
+**四个新东西**：
+
+- `using System.Collections.Generic;` —— 用 `List<>` 必须加这一行，**漏了会报"找不到类型 List"**
+- `public List<Transform> waypoints` —— Inspector 里会出现一个**可拖拽、可排序**的列表
+- `Mathf.Clamp(index, 0, Count - 1)` —— **越界保护**。哪怕上层传了个 999，也不会崩，只会夹到最后一个点
+- `loop ? 0 : index` —— **三元运算符**，是 `if...else` 的简写。读作"`loop` 为真就取 0，否则取 `index`"
+
+### 8.4 改 `AutoDrive.cs`：把单个目标换成一条路径
+
+**① 字段改掉**
+
+```csharp
+[Header("路径（把挂 MyWaypointPath 的物体拖进来）")]
+public MyWaypointPath path;
+
+int _index;   // 现在正在追第几个点
+```
+
+（原来的 `public Transform target;` 删掉。）
+
+**② `Update` 里改成追当前路径点**
+
+```csharp
+void Update()
+{
+    if (car == null || path == null || path.Count == 0) return;
+
+    // ---- 追当前这个路径点 ----
+    Vector3 targetPoint = path.GetPoint(_index);
+    Vector3 local = transform.InverseTransformPoint(targetPoint);
+    float angleDeg = Mathf.Atan2(local.x, local.z) * Mathf.Rad2Deg;
+
+    _targetSteer = Mathf.Clamp(angleDeg / fullSteerAngle, -1f, 1f);
+    Steer = Mathf.MoveTowards(Steer, _targetSteer, steerRate * Time.deltaTime);
+
+    // ---- 到了就换下一个点 ----
+    float distance = local.magnitude;
+    bool reached  = distance < arrivalRadius;
+    bool overshot = local.z < 0f && distance < arrivalRadius * 2f;   // 冲过头了也算到
+
+    if (reached || overshot)
+    {
+        int next = path.NextIndex(_index);
+        if (next != _index)
+        {
+            _index = next;
+            Debug.Log($"[AutoDrive] 到达 → 切换到第 {_index} 个点");
+        }
+    }
+
+    // ---- 交给 CarController ----
+    car.SetInput(Steer, 1f);   // 油门恒为 1：这条路没有终点，一直跑
+
+    if (Time.frameCount % 30 == 0)
+        Debug.Log($"点 {_index} | 距离 {distance:F1} | 偏角 {angleDeg:F1}° | steer {Steer:F2}");
+}
+```
+
+**两个关键点**：
+
+**① `overshot`（冲过头判定）是这一课的灵魂**
+
+只判断 `distance < arrivalRadius` 是不够的：如果车速度太快、转弯半径太大，**擦着路标点冲过去**，距离永远降不到 `arrivalRadius` 以内 —— 它就会**绕着这个点转圈，永远出不来**。
+
+```csharp
+bool overshot = local.z < 0f && distance < arrivalRadius * 2f;
+```
+
+`local.z < 0` 表示**这个点已经在我身后了** → 说明我冲过头了 → 也算"到了"，换下一个点。
+
+> 你项目里 `WaypointFollower` 的 `overshot` 就是这一行。**这是实测跑出来的补丁**，
+> 不是想出来的 —— 第 2 课那个"遇到障碍就停住"的死锁，是同一类几何陷阱。
+
+**② `next != _index` 这个判断为什么必要**
+
+`NextIndex` 在"不循环且已在最后一个点"时会**原样返回 `_index`**。
+如果没这个判断，代码会一直打印"到达"，把 Console 刷爆。
+
+### 8.5 装配（5 步）
+
+1. **建 4 个路标点**：Hierarchy 右键 → `3D Object` → `Sphere`，改名 `WP0`；再建 3 个叫 `WP1` `WP2` `WP3`
+2. **摆成一个圈**：选中它们，在 Inspector 的 `Position` 里填
+   - `WP0` → `(10, 0, 0)`
+   - `WP1` → `(0, 0, 10)`
+   - `WP2` → `(-10, 0, 0)`
+   - `WP3` → `(0, 0, -10)`
+3. **建一个容器**：Hierarchy 右键 → `Create Empty`，改名 `Path`，Position 归零 `(0,0,0)`
+4. **把 WP0~WP3 拖进 `Path` 下面**（变成它的子物体），然后给 `Path` 加 `My Waypoint Path` 组件，
+   把 4 个球**按顺序拖进 `Waypoints` 列表**
+
+   > **注意菜单里有两个长得像的组件**：
+   > - `My Waypoint Path` ← **用这个**（你自己写的学习版）
+   > - `Waypoint Path` ← 项目正式版（`Assets/Scripts/B/` 里那个）
+   >
+   > 两个都能用、功能一样。**这一课统一用 `My Waypoint Path`**，因为它是你亲手写的。
+5. **挂上去**：选中 `Cube` → `Auto Drive` 组件的 `Path` 槽位 ← 拖入 `Path`
+
+原来的 `Target` 球可以删了。
+
+### 8.6 实验
+
+| # | 做什么 | 看什么 |
+|---|---|---|
+| 1 | Play | 车绕着 4 个点跑**一整圈**，Console 依次打印 `切换到第 1 / 2 / 3 / 0 个点` |
+| 2 | 关掉 `Path` 上的 `Loop` | 车跑到最后一个点就停住，Console 不再刷新 |
+| 3 | 把 `Arrival Radius` 从 `3` 改成 `0.5` | 车开始**擦着点冲过去**，靠 `overshot` 才换点；改到 `0.1` 会绕圈 |
+| 4 | 在 `Waypoints` 列表里**拖动元素左边的小把手**换顺序 | 车跑的顺序跟着变（不用改代码） |
+| 5 | **再加一个球 `WP4`**，拖进列表 | 路径自动变长 —— **这就是用 `List` 而不是写死 4 个变量的价值** |
+| 6 | 把 `Max Speed` 从 `5` 改成 `12` | 转弯半径 `12 ÷ 2.09 = 5.7 米` > 到达半径 → 开始大量依赖 `overshot`，跑得歪歪扭扭 |
+
+**实验 6 很重要**：它让你看到**速度、转弯能力、到达半径三者的匹配关系** —— 和你项目里 `AutoDriver` 要处理的完全是同一个问题。
+
+### 8.7 到这里你手里有什么
+
+| 你的脚本 | 项目里对应的 | 状态 |
+|---|---|---|
+| `CarController.cs` | A 模块的车辆执行器 | ✅ 等价 |
+| `AutoDrive.cs` | B 模块的 `WaypointFollower` | ✅ 核心算法已一致 |
+| `MyWaypointPath.cs` | B 模块的 `WaypointPath` | ✅ 等价（改名是为了不撞类名） |
+| `FollowCamera.cs` | 可视化辅助 | ✅ |
+
+**你已经从零把项目的骨架写出来了一遍。** 剩下的第 8~10 课是把 MATLAB 数字孪生接进来，以及把车做得像车。
+
+---
+
+## 九、接下来的课（学到再补详细内容）
+
+第 8 课：`Raycast` 射线 → 测前方障碍物的距离（`FrontCarDetector` 的原理）
 
 **每节课结束时，你都会多一段自己写的、能跑的代码。**
