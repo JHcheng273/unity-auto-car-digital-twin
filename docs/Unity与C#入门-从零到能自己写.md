@@ -2399,7 +2399,131 @@ public class AutoDrive : MonoBehaviour
 **实验 4 很重要**：它让你看到 `Blocked Timeout = 0` 和 `= 3` 的唯一区别，
 就是"**要不要给自己留一条退路**"。这就是看门狗（watchdog）的思想。
 
-### 11.8 到这里你手里有什么
+### 11.8 如果车"没跑完一整圈"
+
+**先别急着改代码 —— 这大概率不是 bug。**
+
+跑完之后去 Console 搜索框里搜 `放弃`，如果看到这一行：
+
+```
+[状态] 点 0 已停 3.0 秒 → 放弃这个点
+```
+
+那说明：**车没有穿过障碍物，它是主动放弃了 WP0**，然后直接从 WP1 开始跑。
+
+#### 为什么它会打印"★ 跑完第 1 圈"
+
+`AdvanceWaypoint()` 里判断"跑完一圈"的条件是：
+
+```csharp
+if (next == 0 && _index != 0)   // 从最后一个点绕回 0
+```
+
+车跳过 WP0 后，走的是 `WP1 → WP2 → WP3 → 回到 0`。
+走到最后一步时 `next == 0`、`_index == 3`，条件成立 → `LapCount++` → 打印 `★ 跑完第 1 圈`。
+
+**计数器只认"绕回 0 这个动作"，不认"WP0 到底去没去过"。**
+所以它认为跑完了，而实际上 WP0 从头到尾没被访问过。
+
+这不是逻辑错误 —— `blockedTimeout` 的设计意图就是"堵太久就绕开"。
+只是这个场景里，障碍物正好挡在**去第一个点的唯一路径**上，所以看起来像"少跑了一段"。
+
+#### 方案 A：把障碍物挪出路线（先做这个）
+
+目的：**先确认整条环路本身是通的**，把"路径跟随"和"避障"两件事分开验证。
+
+1. 按 `▶` 停止 Play（Play 里的改动，停止后会全部丢弃）
+2. Hierarchy 里点 `Obstacle`
+3. Inspector → Transform → **Position** 行，改成 `X = 16`、`Y = 0`、`Z = 6`
+4. `Ctrl + S` 保存场景
+5. `▶` Play
+
+预期 Console：
+
+```
+[状态] → Driving
+★ 跑完第 1 圈
+[状态] Driving → Finished
+[状态] 跑满 1 圈 → 停车
+```
+
+约 14 秒，中间**不会出现任何 `Blocked`**。
+
+#### 方案 B：保留障碍物，让车绕过去
+
+如果验收时老师要看"绕障"这个功能点，障碍物就得留着，那就得让车**绕开**而不是放弃。
+
+思路：在 `Blocked` 状态下，把**目标点沿车的右侧横移 8 米**。
+车一看目标点偏到右边去了，自然就往右打方向，从障碍物旁边蹭过去。
+
+改 3 处：
+
+**① 加字段**（放在 `blockedTimeout` 下面）
+
+```csharp
+    [Tooltip("被堵住时，目标点向右侧横移多少米绕行（0 = 不绕）")]
+    public float evadeOffset = 8f;
+```
+
+**② 加一个取目标点的函数**（放在 `SteerTowardTarget()` 上面）
+
+```csharp
+    // 正常时就是路径点本身；被堵住时，往车的右侧挪一点
+    Vector3 GetTargetPoint()
+    {
+        Vector3 p = path.GetPoint(_index);
+
+        if (CurrentState == State.Blocked && evadeOffset != 0f)
+        {
+            Vector3 right = transform.right;   // 车自己右边（世界坐标）
+            right.y = 0f;
+            right.Normalize();
+            p += right * evadeOffset;
+        }
+        return p;
+    }
+```
+
+**③ 把两处 `path.GetPoint(_index)` 换成 `GetTargetPoint()`**
+
+`SteerTowardTarget()` 里：
+
+```csharp
+        Vector3 local = transform.InverseTransformPoint(GetTargetPoint());
+```
+
+`AtTarget()` 里：
+
+```csharp
+        Vector3 local = transform.InverseTransformPoint(GetTargetPoint());
+```
+
+（只改这两行的右边，别的都不动。）
+
+**跑起来会看到什么**：`Blocked ↔ Driving` 会来回切几次，Console 里有一串状态日志。
+这是正常的 —— 绕行只做了横向平移，目标点还在障碍物后方，所以车是"走走停停"地蹭过去。
+
+#### 两个方案的取舍
+
+| | 方案 A | 方案 B |
+| --- | --- | --- |
+| 改动量 | 改一个坐标 | 改 3 处代码 |
+| 一圈时间 | 约 13.8 秒 | 约 14.4 秒 |
+| WP0~WP3 是否全访问 | ✅ | ✅ |
+| 有没有"绕障"演示 | 没有 | 有 |
+| 代码复杂度 | 不变 | 多一个函数 |
+
+**建议：先 A 后 B。** A 花 30 秒就能确认整圈逻辑没问题；
+时间够再上 B，把"绕障"当作加分项。
+
+#### 真正的绕障该怎么做（答辩可以提）
+
+方案 B 是**工程上够用、学术上不够**的简化做法。真正的局部路径规划是：
+把障碍物轮廓采样成一系列候选点，选一个"离目标最近、又不撞障碍"的作为临时目标 ——
+这就是 **VFH（向量场直方图）** 或 **DWA（Dynamic Window Approach）** 的核心思想。
+你的项目规模用不上，但答辩时能说出这两个词，比"我加了个横移"有说服力得多。
+
+### 11.9 到这里你手里有什么
 
 | 你的脚本 | 项目里对应的 | 状态 |
 | --- | --- | --- |
