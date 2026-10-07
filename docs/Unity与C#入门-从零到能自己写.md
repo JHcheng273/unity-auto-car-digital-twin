@@ -2791,10 +2791,263 @@ Legacy Text 的默认字体（`LegacyRuntime.ttf`）在 Windows 下一般能显�
 
 ---
 
-## 十三、接下来的课（学到再补详细内容）
+## 十三、第 12 课：数据曲线图 —— 把数字变成"看得见的趋势"
 
-- **第 12 课**：把速度、转向、障碍距离画成**曲线图** —— 真正的"数据可视化"
-- **第 13 课**：Unity ↔ CoppeliaSim 通讯（CoppeliaSim 当物理体）—— 见 `docs/CoppeliaSim-Unity通讯方案.md`
+第 11 课的面板只能告诉你**现在**是多少。但"数字孪生"真正值钱的是**趋势**：
+速度是平稳的还是忽快忽慢？转向是一直在修正还是偶尔大角度？障碍距离是怎么逼近的？
+
+这一课把三个量画成**随时间滚动的曲线**。
+
+### 13.1 要画什么
+
+| 曲线 | 颜色 | 数据 | 纵轴量程 |
+| --- | --- | --- | --- |
+| 速度 | 黄 | `car.Motor * car.maxSpeed` | 0 ~ 6 m/s |
+| 转向 | 蓝 | `car.Steering` | -1 ~ +1（中间是 0） |
+| 障碍距离 | 红 | `detector.ObstacleDistance` | 0 ~ 20 m |
+
+三条线共用一张图，横轴是时间（从右往左滚动）。
+
+### 13.2 思路：拿一张 `Texture2D` 当画布
+
+Unity 里画自定义图形有好几种办法，但对零基础来说，**最直观的是"自己往一张纹理上点像素"**：
+
+```
+Texture2D（比如 400×120）  =  一块画布
+Color32[] 数组             =  画布上每个点的颜色
+索引 = y * width + x       =  第 y 行第 x 列那个像素
+```
+
+每 0.05 秒做一轮：
+
+1. 把三条数据数组**整体左移一格**，最新的值写到最右边
+2. 清空画布
+3. 把三条数组按数值大小"翻译"成像素高度，画上去
+4. `tex.Apply()` 把画布推到屏幕上（挂在 `RawImage` 上显示）
+
+**为什么要"左移"？** 因为横轴是时间：新数据从右边进来，旧数据被推出左边 ——
+像心电图一样往左滚。
+
+### 13.3 建一个 RawImage
+
+1. Hierarchy 里选中 **`Canvas`**，右键 → **UI** → **Raw Image**
+2. 重命名为 **`GraphImage`**
+3. 选中它 → Rect Transform → 按住 `Alt` 点锚点预设的 **`bottom left`**（左下角）
+4. 设 `Pos X = 20`、`Pos Y = 20`（**正数** —— 从左下角往上走是加）、`Width = 400`、`Height = 120`
+5. 检查 **Pivot** 是 **`X = 0`、`Y = 0`**（第 11 课那个坑）
+
+> RawImage 现在是一块**白色方块**（还没有纹理）。脚本运行时会把自己的纹理塞进去。
+
+### 13.4 写 `GraphPanel.cs`
+
+```csharp
+using UnityEngine;
+using UnityEngine.UI;
+
+/// <summary>
+/// 数据曲线图：把速度 / 转向 / 障碍距离画成随时间滚动的曲线。
+/// 挂在 Cube 上，只拖一个 RawImage 引用。
+/// </summary>
+public class GraphPanel : MonoBehaviour
+{
+    [Header("显示用的 RawImage（把 GraphImage 拖进来）")]
+    public RawImage target;
+
+    [Header("数据源（留空会自动从自己身上找）")]
+    public CarController car;
+    public MyFrontDetector detector;
+
+    [Header("画布尺寸")]
+    public int width = 400;
+    public int height = 120;
+
+    [Header("采样间隔（秒）—— 越小越流畅，也越费性能")]
+    public float sampleInterval = 0.05f;
+
+    [Header("纵轴量程")]
+    public float maxSpeed = 6f;       // 速度 0~6 m/s
+    public float maxDistance = 20f;   // 距离 0~20 m
+
+    Texture2D tex;          // 画布
+    Color32[] pixels;       // 画布上的所有像素
+
+    float[] speedHist;      // 速度历史（长度 = width）
+    float[] steerHist;      // 转向历史
+    float[] distHist;       // 距离历史
+
+    float _timer;
+
+    void Start()
+    {
+        if (car == null) car = GetComponent<CarController>();
+        if (detector == null) detector = GetComponent<MyFrontDetector>();
+
+        tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        tex.filterMode = FilterMode.Point;      // 像素清晰，不做模糊
+        pixels = new Color32[width * height];
+
+        speedHist = new float[width];
+        steerHist = new float[width];
+        distHist  = new float[width];
+
+        Clear();
+        tex.SetPixels32(pixels);
+        tex.Apply();
+
+        if (target != null) target.texture = tex;
+    }
+
+    void Update()
+    {
+        if (car == null || tex == null) return;
+
+        // ---- 按固定间隔采样，不是每帧都采 ----
+        _timer += Time.deltaTime;
+        if (_timer < sampleInterval) return;
+        _timer = 0f;
+
+        Shift(speedHist, car.Motor * car.maxSpeed);
+        Shift(steerHist, car.Steering);
+        Shift(distHist,  detector != null ? detector.ObstacleDistance : maxDistance);
+
+        Clear();
+        DrawCurve(speedHist, maxSpeed,    new Color32(255, 220,  80, 255), false);
+        DrawCurve(steerHist, 1f,          new Color32(120, 200, 255, 255), true);
+        DrawCurve(distHist,  maxDistance, new Color32(255, 120, 120, 255), false);
+
+        tex.SetPixels32(pixels);
+        tex.Apply();
+    }
+
+    // 数组整体左移一格，新值写到最右边
+    void Shift(float[] buf, float value)
+    {
+        System.Array.Copy(buf, 1, buf, 0, buf.Length - 1);
+        buf[buf.Length - 1] = value;
+    }
+
+    // 整块画布涂成深色
+    void Clear()
+    {
+        for (int i = 0; i < pixels.Length; i++)
+            pixels[i] = new Color32(20, 20, 30, 220);
+    }
+
+    // 把一条数据数组画成曲线
+    void DrawCurve(float[] buf, float range, Color32 color, bool signed)
+    {
+        for (int x = 0; x < width; x++)
+        {
+            float v = buf[x] / range;
+
+            // 转向是 -1~1，要平移到 0~1 才能映射成高度
+            if (signed) v = v * 0.5f + 0.5f;
+
+            int y = Mathf.RoundToInt(Mathf.Clamp01(v) * (height - 1));
+
+            pixels[y * width + x] = color;
+            if (y > 0) pixels[(y - 1) * width + x] = color;   // 加粗一格
+        }
+    }
+
+    void OnDestroy()
+    {
+        if (tex != null) Destroy(tex);      // 纹理要手动销毁，否则会漏内存
+    }
+}
+```
+
+### 13.5 装配
+
+1. 选中 **`Cube`** → `Add Component` → 搜 `GraphPanel`
+2. 把 Hierarchy 里的 **`GraphImage`** 拖到组件里的 **`Target`** 框
+3. `Car` 和 `Detector` **留空**（`Start()` 会自动从自己身上找）
+4. `Ctrl + S` → `▶` Play
+
+### 13.6 预期效果
+
+屏幕左下角出现一块深色画布，三条线从右边慢慢长出来：
+
+- **黄线（速度）**：起步时冲到顶（5.0），遇到障碍时掉下来，停稳后归零
+- **蓝线（转向）**：大部分时间在中间（0）附近小幅抖动；掉头时冲到顶或底
+- **红线（距离）**：一开始贴在顶部（20 = 没有障碍），靠近障碍时**往下掉** —— 掉得越低离障碍越近
+
+跑完一圈（约 14 秒）后，三条线的形状就完整了。**这张图就是你答辩时最直观的"数字孪生"证据** ——
+虚拟车每一步的决策都留在了曲线上。
+
+### 13.7 三个关键点拆解
+
+**① `System.Array.Copy` 做左移**
+
+```csharp
+System.Array.Copy(buf, 1, buf, 0, buf.Length - 1);
+//                 源, 起始下标, 目标, 起始下标, 拷贝几个
+```
+
+意思是"把 `buf[1..]` 复制到 `buf[0..]`"，等于整体左移一格。
+比写 `for` 循环快得多，也短得多。**同一块内存内部搬数据，C# 是支持的。**
+
+**② 归一化：把物理量变成"高度比例"**
+
+```csharp
+float v = buf[x] / range;              // 速度 3.5 ÷ 6 = 0.58
+int y = RoundToInt(v * (height - 1));  // 0.58 × 119 = 69 像素高
+```
+
+`range` 就是"纵轴顶到多少"。速度量程设 `6`，所以 6 m/s 顶到最上面。
+`Mathf.Clamp01` 是保险 —— 万一数值超了量程，夹到 0~1，不会数组越界。
+
+**③ 像素索引 `y * width + x`**
+
+一维数组怎么表示二维画布？
+
+```
+下标 = 第几行 × 每行几个 + 第几列
+     = y     × width   + x
+```
+
+比如 `width = 400`、`y = 3`、`x = 7` → 下标 `1207`。
+**这是二维数据在一维内存里的标准排法**，写图像、音频、矩阵处理时天天用。
+
+### 13.8 实验
+
+| # | 做什么 | 看什么 |
+| --- | --- | --- |
+| 1 | Play | 三条线从右边长出来，约 20 秒铺满整张画布 |
+| 2 | 把 `Max Speed` 从 `6` 改成 `3` | 黄线顶到天花板后被"削平"（因为超过了量程） |
+| 3 | 把 `Sample Interval` 从 `0.05` 改成 `0.2` | 曲线变成折线，历史窗口变长（400×0.2 = 80 秒） |
+| 4 | 把 `Width` 改成 `800` | 画布更宽、历史更长；注意 RawImage 的 Width 也要跟着改 |
+| 5 | Play 中把 `Obstacle` 拖到车前面 | 红线**往下掉**，同时黄线掉、蓝线抖动 |
+| 6 | 把 `Clear()` 里的赋值删掉 | 曲线不再被擦除，会拖出"残影" |
+
+**实验 2 很重要**：它让你直观看到"量程"的意义。量程选小了，真实数据被削平，
+你会以为车没跑快过 —— **这是所有数据可视化都会踩的坑**。
+
+### 13.9 到这里你手里有什么
+
+| 你的脚本 | 负责什么 | 项目里的角色 |
+| --- | --- | --- |
+| `CarController.cs` | 把输入变成运动 | **A 模块**（车辆执行器） |
+| `MyFrontDetector.cs` | 前方测距 | **B 模块**（感知） |
+| `MyWaypointPath.cs` | 存路径点 | **B 模块**（路径） |
+| `AutoDrive.cs` | 决策 + 状态机 | **B + C 模块**（规划 + 自动驾驶员） |
+| `HudDisplay.cs` | 数字面板 | **C 模块**（实时数据） |
+| `GraphPanel.cs` | 曲线图 | **C 模块**（趋势可视化） |
+| `FollowCamera.cs` | 跟随视角 | 辅助 |
+
+**7 个脚本。Unity 这一侧，做完了。**
+
+---
+
+## 十四、接下来的课
+
+> **⚠️ 优先级提醒**：CoppeliaSim 通讯是**老师明确要求的硬指标**，不是加分项。
+> 它从零开始（装软件 + 学 Lua + 打通 UDP），对零基础来说至少需要 3~4 周。
+> **Unity 这边已经收尾，建议立刻转过去，不要再往打磨上投时间。**
+
+- **第 13 课（最高优先级）**：Unity ↔ CoppeliaSim 通讯 —— CoppeliaSim 当物理体
+  详见 `docs/CoppeliaSim-Unity通讯方案.md`（含 15 分钟冒烟测试）
 - **第 14 课**：场景美化 + 录屏 + 答辩材料
+- **第 15 课（可选）**：面板美化（把两块面板合成一块、加背景图）
 
 **每节课结束时，你都会多一段自己写的、能跑的代码。**
