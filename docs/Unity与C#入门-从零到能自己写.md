@@ -2540,8 +2540,249 @@ if (next == 0 && _index != 0)   // 从最后一个点绕回 0
 
 ---
 
-## 十二、接下来的课（学到再补详细内容）
+## 十二、第 11 课：数据面板（HUD）—— 把车"脑子里想的东西"显示出来
 
-- **第 11 课**：数据面板 HUD —— 把速度、障碍距离、当前目标点画在屏幕上
+到这里，车已经能自己跑完一圈了。但你现在只能靠 Console 里的日志猜它在想什么，
+Game 视图里什么都看不到 —— **答辩的时候老师看不到数据，等于没有数字孪生。**
+
+这一课做一件事：把车内部的状态实时画在屏幕左上角。
+
+### 12.1 要显示什么
+
+先想清楚"哪些数据值得看"。你手里现在有这些：
+
+| 数据 | 从哪来 | 类型 |
+| --- | --- | --- |
+| 当前状态 | `AutoDrive.CurrentState` | `Driving / Blocked / Finished` |
+| 正在追第几个点 | `AutoDrive._index` | int |
+| 跑了几圈 | `AutoDrive.LapCount` | int |
+| 一共要跑几圈 | `AutoDrive.totalLaps` | int |
+| 路径点总数 | `AutoDrive.path.Count` | int |
+| 油门 | `CarController.Motor` | 0 ~ 1 |
+| 转向 | `CarController.Steering` | -1 ~ +1 |
+| 最大速度 | `CarController.maxSpeed` | 米/秒 |
+| 前方障碍 | `MyFrontDetector.ObstacleName / ObstacleDistance` | string / float |
+| 车在哪 | `transform.position` | Vector3 |
+
+**有个坑要先补上**：`_index` 是 `private` 的，外面读不到。所以要给 `AutoDrive` 加一个只读出口。
+
+### 12.2 给 `AutoDrive.cs` 加一行
+
+找到这两行：
+
+```csharp
+    public State CurrentState { get; private set; }
+    public int LapCount { get; private set; }
+```
+
+在它们**下面**加一行：
+
+```csharp
+    public int CurrentWaypointIndex => _index;
+```
+
+`=> _index` 是**表达式体属性**的写法，意思是"每次有人读 `CurrentWaypointIndex`，
+就把 `_index` 的当前值给他"。只读、不占额外内存、**永远不会不同步** —— 比再存一份变量好。
+
+> **顺手清理**：第 9 课留下的 `public float Throttle { get; private set; }` 从头到尾没被赋过值，
+> 永远是 `0`。面板用 `CarController.Motor` 更准。那一行可以删，也可以留着（不影响运行）。
+
+### 12.3 建一个 UI 文字
+
+1. Hierarchy 空白处右键 → **UI** → **Legacy** → **Text**
+2. 这一步 Unity 会自动帮你创建：
+   - `Canvas`（画布）—— 所有 UI 都挂在它下面
+   - `EventSystem` —— UI 的输入系统（现在用不到，**别删**）
+   - 新建的 `Text` 是 `Canvas` 的子物体
+3. 把 `Text` 重命名为 **`HudText`**（选中后按 `F2`）
+
+> **为什么用 Legacy Text 而不是 TextMeshPro？**
+> TMP 更清晰、是官方推荐，但它的字体是**预烘焙的 SDF 字体**，默认那套**不含中文字符**，
+> 要显示中文得自己做字体资产（步骤不少）。
+> Legacy Text 用的是**动态字体**，Windows 下中文直接就能显示。
+> 这个课设用 Legacy Text 最省事。（真想用 TMP，见 12.10）
+
+### 12.4 把文字摆到左上角
+
+选中 `HudText`，看 Inspector 里的 **Rect Transform**。
+
+**先理解"锚点（Anchor）"**：锚点决定"这个 UI 相对于父物体的哪个位置来定位"。
+锚点在**左下角**，窗口变大时文字还待在左下角；锚点在**左上角**，文字就固定在左上角。
+我们要的是"不管窗口多大，面板都贴在左上角"。
+
+操作：
+
+1. 点开 Rect Transform 左上角那个**锚点预设**小方块
+2. **按住 `Alt` 键，点击 `top left`**（左上角那个选项）
+   - 按住 Alt 的作用是：**同时**把锚点、轴心都设到左上角，并把位置归零
+3. 现在设：
+   - `Pos X = 20`
+   - `Pos Y = -20`（**是负数** —— UI 的 Y 轴向上为正，往下走要减）
+   - `Width = 420`
+   - `Height = 240`
+
+### 12.5 调 Text 组件
+
+在 `HudText` 的 Inspector 里往下找到 **Text** 组件：
+
+| 字段 | 设成 | 为什么 |
+| --- | --- | --- |
+| Text | `初始化中...` | 先随便填，脚本运行时会覆盖它 |
+| Font Size | `16` | 太小看不清，太大挡画面 |
+| Color | 淡黄 `R255 G230 B80` | 天空是浅蓝的，白字会糊；淡黄在任何背景上都清楚 |
+| Horizontal Overflow | `Overflow` | 防止文字被框裁掉 |
+| Vertical Overflow | `Overflow` | 同上 |
+
+### 12.6 写 `HudDisplay.cs`
+
+在 `Assets` 里新建脚本，**文件名必须是 `HudDisplay.cs`**（文件名 = 类名，第 1 课就说过）。
+
+```csharp
+using UnityEngine;
+using UnityEngine.UI;
+
+/// <summary>
+/// 数据面板：把车内部的状态实时画在屏幕上。
+/// 挂在 Cube 上，三个数据源用 GetComponent 自动拿。
+/// </summary>
+public class HudDisplay : MonoBehaviour
+{
+    [Header("要显示的文字（把 HudText 拖进来）")]
+    public Text label;
+
+    AutoDrive drive;
+    CarController car;
+    MyFrontDetector detector;
+
+    void Start()
+    {
+        // 三个脚本都挂在同一个物体（Cube）上，直接拿
+        drive    = GetComponent<AutoDrive>();
+        car      = GetComponent<CarController>();
+        detector = GetComponent<MyFrontDetector>();
+    }
+
+    void Update()
+    {
+        if (label == null || drive == null || car == null) return;
+        if (drive.path == null) return;
+
+        // 实际速度 = 油门 × 最大速度
+        float speed = car.Motor * car.maxSpeed;
+
+        // 前方那行：有障碍就写名字和距离，没有就写"无"
+        string front;
+        if (detector == null || detector.ObstacleName == "")
+            front = "无";
+        else
+            front = $"{detector.ObstacleName}   {detector.ObstacleDistance:F1} m";
+
+        label.text =
+            $"状态     {drive.CurrentState}\n" +
+            $"目标点   WP{drive.CurrentWaypointIndex} / 共 {drive.path.Count} 个\n" +
+            $"圈数     {drive.LapCount} / {drive.totalLaps}\n" +
+            $"速度     {speed:F2} m/s\n" +
+            $"油门     {car.Motor:F2}      转向 {car.Steering:F2}\n" +
+            $"前方     {front}\n" +
+            $"位置     ({transform.position.x:F1}, {transform.position.z:F1})";
+    }
+}
+```
+
+**三个新东西**：
+
+1. `using UnityEngine.UI;`
+   `Text` 这个类住在 `UnityEngine.UI` 命名空间里。不加这行，编译器会报"找不到类型 `Text`"。
+
+2. `\n` 是**换行符**
+   字符串里写 `\n`，显示出来就是换行。**这是字符串内部的转义**，不是 C# 语法。
+
+3. `$"..."` 插值字符串里可以**放表达式**
+   `{speed:F2}` 里的 `:F2` 是格式说明符 —— "保留 2 位小数"。`F1` 是 1 位，`F0` 是 0 位。
+
+**为什么在 `Update()` 里每帧拼字符串？**
+严格说有点浪费（每帧产生 7 行新字符串，会给 GC 添麻烦）。
+更讲究的做法是加个计时器每 0.1 秒刷新一次。但面板数据本来就变化慢，
+现在这样最直观 —— **先跑通，再优化**。
+
+### 12.7 装配
+
+1. 选中 **`Cube`**（车）
+2. Inspector → `Add Component` → 搜 `HudDisplay` → 添加
+3. 新出现的 `Hud Display` 组件里有一个 **`Label`** 空框
+4. 把 Hierarchy 里的 **`HudText`** 拖进这个框
+5. `Ctrl + S` 保存场景
+6. `▶` Play
+
+### 12.8 预期效果
+
+Game 视图**左上角**出现 7 行淡黄色数据，随车实时变化：
+
+```
+状态     Driving
+目标点   WP0 / 共 4 个
+圈数     0 / 1
+速度     5.00 m/s
+油门     1.00      转向 -0.32
+前方     无
+位置     (1.0, 20.0)
+```
+
+跑起来你会看到：
+
+- `目标点` 从 `WP0` 一格格跳到 `WP3`，然后回到 `WP0`
+- `圈数` 从 `0 / 1` 变成 `1 / 1`
+- `状态` 变成 `Finished`，`速度` 和 `油门` 都归 `0`
+- 路上遇到障碍时，`前方` 那行会亮出 `Obstacle   3.2 m`，同时 `状态` 变 `Blocked`
+
+**这就是数字孪生里"孪生体"该有的样子** —— 虚拟世界里的车，把自己的实时状态吐出来给人看。
+
+### 12.9 实验
+
+| # | 做什么 | 看什么 |
+| --- | --- | --- |
+| 1 | Play | 面板数字随车变化，7 行都对得上 |
+| 2 | Play 中把 `Obstacle` 拖到车正前方 | `前方` 立刻出现名字和距离，`状态` 变 `Blocked`；拖走 → 变回 `Driving` |
+| 3 | 把 `Total Laps` 从 `1` 改成 `2` | `圈数` 走 `0/2 → 1/2 → 2/2` |
+| 4 | 把 `HudDisplay` 的 `Label` 引用清空（选 `None`） | 面板不动了，但**车照跑** |
+| 5 | 把 `Font Size` 改成 `24` | 字变大；Width 还留在 `420` 会不会被裁 |
+
+**实验 4 很重要**：它证明你的架构是对的 —— **面板是"旁挂"的，它挂掉不影响车**。
+这正是第 6 课讲门面模式的意义：数据源只暴露**只读属性**，谁来看都行，看的人不影响被看的。
+
+### 12.10 如果中文显示成方块
+
+Legacy Text 的默认字体（`LegacyRuntime.ttf`）在 Windows 下一般能显示中文。
+如果**真的显示成方块**，换一个系统字体就行：
+
+1. 打开 `C:\Windows\Fonts\`，找到 **`simhei.ttf`**（黑体，单一 TTF 文件，Unity 认）
+2. 在 Unity 的 `Assets` 里新建文件夹 `Fonts`，把 `simhei.ttf` **拖进去**
+3. 选中 `HudText` → Text 组件 → **Font** 字段 → 选 `simhei`
+4. `Ctrl + S`
+
+> 别用 `msyh.ttc`（微软雅黑）—— `.ttc` 是**字体集合**，Unity 导入时容易出问题。
+> 要挑 `.ttf` 结尾的。
+
+### 12.11 到这里你手里有什么
+
+| 你的脚本 | 负责什么 | 项目里的角色 |
+| --- | --- | --- |
+| `CarController.cs` | 把输入变成运动 | **A 模块**（车辆执行器） |
+| `MyFrontDetector.cs` | 前方测距 | **B 模块**（感知） |
+| `MyWaypointPath.cs` | 存路径点 | **B 模块**（路径） |
+| `AutoDrive.cs` | 决策 + 状态机 | **B + C 模块**（规划 + 自动驾驶员） |
+| `HudDisplay.cs` | 显示实时数据 | **C 模块**（可视化面板） |
+| `FollowCamera.cs` | 跟随视角 | 辅助 |
+
+**6 个脚本，三个模块全齐了。** 这就是"一个人做完整项目"所需的全部核心代码，
+剩下的都是打磨：美化面板、加曲线图、接 CoppeliaSim。
+
+---
+
+## 十三、接下来的课（学到再补详细内容）
+
+- **第 12 课**：把速度、转向、障碍距离画成**曲线图** —— 真正的"数据可视化"
+- **第 13 课**：Unity ↔ CoppeliaSim 通讯（CoppeliaSim 当物理体）—— 见 `docs/CoppeliaSim-Unity通讯方案.md`
+- **第 14 课**：场景美化 + 录屏 + 答辩材料
 
 **每节课结束时，你都会多一段自己写的、能跑的代码。**
