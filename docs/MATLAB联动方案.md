@@ -139,6 +139,38 @@
 | 端口被占 | 上次没关干净 | 换端口号，或 `clear u` / 重启 MATLAB |
 | 速度单位不对 | Unity 用米/秒，有人当 km/h | 全程统一用 **米/秒**，报告里注明 |
 | Console 报 `CS0101` + `CS0579` | 工程里有两份脚本定义了**同名类型** | 见下方「编译冲突」 |
+| MATLAB 报 `未识别的类 'udpport.datagram.UDPPort' ... 'NumBytesAvailable'` | R2025a 的 `udpport` 没有这个属性 | 改用 `NumDatagramsAvailable`，见下方「udpport API 变更」 |
+
+### udpport API 变更（R2025a 实测）
+
+`matlab/unity_bridge.m` 原来用的是 R2020b 时代的写法，在 **R2025a 上会直接崩**（主循环第一行）：
+
+```
+未识别的类 'udpport.datagram.UDPPort' 的方法、属性或字段 'NumBytesAvailable'
+```
+
+| | 旧写法（在 R2025a 不存在） | 新写法（R2025a 实测可用） |
+|---|---|---|
+| 有多少数据可读 | `u.NumBytesAvailable`（字节数） | `u.NumDatagramsAvailable`（**数据报个数**） |
+| 读一包 | `read(u, n, "uint8")` → 字节数组 | `read(u, 1, "uint8")` → **`Datagram` 对象** |
+| 取内容 | 直接用 | `d(1).Data`（double 数组，经 `uint8()` 再 `char()`） |
+
+正确写法：
+
+```matlab
+if u.NumDatagramsAvailable > 0
+    d   = read(u, 1, "uint8");      % 读 1 个数据报，返回 Datagram 对象
+    raw = uint8(d(1).Data);         % 从对象里取字节
+    s   = string(char(raw(:)'));    % 转成 JSON 字符串
+end
+```
+
+另外 `datestr(now, ...)` 在 R2025a 已标记为「不推荐」，换成了
+`string(datetime('now'), 'yyyyMMdd_HHmmss')`。
+
+**实测验证（2026-10-08）**：用 Python 模拟 Unity 往 5005 发 286 包，MATLAB 收到 19 包并画出曲线、存出 CSV；MATLAB 回传的指令 `{"v_des":8,"steer_des":999,"brake":false,"seq":0}` Python 也收到了 —— **双向通**。
+
+---
 
 ### 编译冲突：`CS0101` / `CS0579`
 

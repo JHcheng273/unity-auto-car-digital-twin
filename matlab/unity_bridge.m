@@ -12,6 +12,11 @@
 %   3. 关掉图窗即停止，数据自动存成 CSV
 %
 % 需要 R2020b 及以上（用到了 udpport）。不需要任何工具箱。
+%
+% 【R2025a 实测修正 2026-10-08】
+%   udpport 的属性是 NumDatagramsAvailable（可用「数据报」个数），
+%   不是 NumBytesAvailable（可用「字节数」）—— 后者在该版本不存在，一读就报错。
+%   read(u, 1, "uint8") 返回的是 Datagram 对象，字节内容在它的 .Data 里。
 
 clear; clc; close all;
 
@@ -77,10 +82,12 @@ log_d = []; log_wp = []; log_sa = []; log_sm = [];
 
 %% ===== 6. 主循环 =====
 while toc(t0) < RUN_SECONDS && ishandle(fig)
-    n = u.NumBytesAvailable;
+    % UDP 是按「数据报」计数的，不是字节数 —— 用 NumDatagramsAvailable
+    n = u.NumDatagramsAvailable;
 
     if n > 0
-        raw = read(u, n, "uint8");
+        d   = read(u, 1, "uint8");      % 读 1 个数据报，返回 Datagram 对象（不是字节数组）
+        raw = uint8(d(1).Data);         % 从对象里取字节
         s   = string(char(raw(:)'));
         try
             st = jsondecode(s);
@@ -154,7 +161,7 @@ clear u;
 if ~isempty(log_t)
     T = table(log_t, log_v, log_vdes, log_vmod, log_d, log_wp, log_sa, log_sm, ...
         'VariableNames', {'t','speed','v_des','v_model','front_dist','wp','s_actual','s_model'});
-    fname = "twin_log_" + datestr(now,'yyyymmdd_HHMMSS') + ".csv";
+    fname = "twin_log_" + string(datetime('now'), 'yyyyMMdd_HHmmss') + ".csv";
     writetable(T, fname);
 
     err = log_v - log_vmod;          % 实体速度 - 模型速度
