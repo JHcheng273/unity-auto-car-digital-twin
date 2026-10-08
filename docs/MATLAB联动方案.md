@@ -138,6 +138,47 @@
 | 车忽快忽慢 | 没做超时降级导致指令抖动 | 确认 `IsConnected` 逻辑；给 `v_des` 加一个变化率限制 |
 | 端口被占 | 上次没关干净 | 换端口号，或 `clear u` / 重启 MATLAB |
 | 速度单位不对 | Unity 用米/秒，有人当 km/h | 全程统一用 **米/秒**，报告里注明 |
+| Console 报 `CS0101` + `CS0579` | 工程里有两份脚本定义了**同名类型** | 见下方「编译冲突」 |
+
+### 编译冲突：`CS0101` / `CS0579`
+
+**症状**（Console 里连着三条，而且都在**同一个文件**上）：
+
+```
+Assets\Scripts\Shared\MatlabUdpBridge.cs(41,14): error CS0101:
+    The namespace '<global namespace>' already contains a definition for 'MatlabCommandPacket'
+Assets\Scripts\Shared\MatlabUdpBridge.cs(40,2): error CS0579: Duplicate 'Serializable' attribute
+Assets\Scripts\Shared\MatlabUdpBridge.cs(26,2): error CS0579: Duplicate 'Serializable' attribute
+```
+
+**原因**：同一个命名空间下出现了两个**同名类型**。这两个脚本都在全局命名空间（没有 `namespace xxx { }` 包裹），所以：
+
+| 文件 | 定义的类型 |
+|---|---|
+| `Assets/Scripts/Shared/MatlabUdpBridge.cs`（正式版） | `UnityStatePacket`、`MatlabCommandPacket`、`MatlabUdpBridge` |
+| `Assets/MatlabBridge.cs`（Learn 版） | **同名的** `UnityStatePacket`、`MatlabCommandPacket`、`MatlabBridge` |
+
+`CS0579` 是**连带的假象** —— 编译器看到类型重复后，把 `[Serializable]` 也当成重复属性报了出来。**修好 `CS0101`，`CS0579` 会自动消失。**
+
+**为什么容易踩**：`UnityStatePacket` / `MatlabCommandPacket` 是**数据契约**，写第二份桥接脚本时最省事的做法就是复制第一份 —— 一复制就重名。
+
+**解决**（选一个）：
+
+1. **只留一份（推荐）** —— 把不用的那份移出编译范围。Unity **只编译 `Assets/` 下的 `.cs`**，所以：
+   - 改扩展名：`MatlabUdpBridge.cs` → `MatlabUdpBridge.cs.disabled`
+   - 或移到 `Assets/` 外面
+   - 仓库里仍有备份，不算丢东西
+2. **改名** —— 给其中一份的 packet 类加前缀（`LearnStatePacket`）。缺点是两份契约会各自演化，容易不同步。
+3. **加命名空间** —— 最规范（`namespace Learn { ... }`），但零基础阶段没必要。
+
+**通用教训**：往一个**已有的**工程里放新脚本前，先搜一下类型名重没重：
+
+```bash
+cd "E:/My project/Assets"
+grep -rn "class UnityStatePacket\|class MatlabCommandPacket" --include="*.cs" .
+```
+
+**判断编译成没成**：`Library/ScriptAssemblies/Assembly-CSharp.dll` 的时间戳要**晚于**你改的 `.cs`。
 
 ---
 
