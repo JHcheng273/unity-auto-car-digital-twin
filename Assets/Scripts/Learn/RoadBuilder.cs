@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -7,15 +8,17 @@ using UnityEngine;
 ///   1. Hierarchy 空白处右键 → 创建空对象（Create Empty），命名 Road
 ///   2. 给 Road 挂上这个脚本（添加组件 Add Component → RoadBuilder）
 ///   3. 把挂 MyWaypointPath 的物体（Path）拖进「数据源」框
-///   4. （可选）把路面材质拖进「路面材质」框，把白线材质拖进「车道线材质」框
-///   5. 点组件标题右上角 ⋮ → 「生成路面」
-///   6. 想改宽度/厚度，改完再点一次（会先清掉上一次生成的）
+///   4. 点组件标题右上角 ⋮ → 「生成路面」
+///
+/// 材质不用你建：
+///   - 「路面材质」留空 → 自动用沥青贴图（Textures/asphalt）
+///   - 「车道线材质」留空 → 自动用纯白
+///   想换成自己的材质，把材质拖进对应的框就行。
 ///
 /// 说明：
 ///   - 生成出来的是压扁的 Cube，脚本会顺手删掉它们的 Collider
 ///     —— 车是运动学模型不需要碰撞，留着反而可能挡住前向射线。
 ///   - 有贴图时会按「贴图重复长度」自动平铺，避免长路段被拉伸成条纹。
-///   - 车道虚线是沿中线摆的一串小扁 Cube，只在勾选后生成。
 /// </summary>
 [ExecuteInEditMode]
 public class RoadBuilder : MonoBehaviour
@@ -29,13 +32,14 @@ public class RoadBuilder : MonoBehaviour
     [Tooltip("路面厚度（米）")]
     public float thickness = 0.05f;
 
-    [Header("路面材质（可选，留空就是默认白）")]
+    [Header("路面材质（留空 = 自动用沥青贴图）")]
     public Material roadMaterial;
-    [Tooltip("贴图多少米重复一次；填 0 = 不平铺（保持拉伸）")]
+    [Tooltip("贴图多少米重复一次；填 0 = 不平铺")]
     public float textureTileLength = 4f;
 
-    [Header("车道虚线（可选，要先勾上）")]
-    public bool drawLaneLine = false;
+    [Header("车道虚线")]
+    public bool drawLaneLine = true;
+    [Tooltip("留空 = 自动用白色")]
     public Material laneLineMaterial;
     [Tooltip("每段虚线长（米）")]
     public float dashLength = 2f;
@@ -43,6 +47,13 @@ public class RoadBuilder : MonoBehaviour
     public float dashGap = 2f;
     [Tooltip("虚线宽度（米）")]
     public float dashWidth = 0.15f;
+
+    // 自己造出来的材质，重新生成时要销毁，不然会一直泄漏
+    [HideInInspector] public List<Material> generatedMaterials = new List<Material>();
+
+    // 本次实际使用的材质（不序列化，每次 Build 重算）
+    Material _roadMat;
+    Material _laneMat;
 
     [ContextMenu("生成路面")]
     public void Build()
@@ -55,10 +66,24 @@ public class RoadBuilder : MonoBehaviour
             return;
         }
 
+        // ---------- 决定用哪套材质：用户拖了就用用户的，没拖就自动造 ----------
+        _roadMat = roadMaterial;
+        if (_roadMat == null)
+        {
+            _roadMat = Track(MaterialLib.Textured(
+                "RoadAsphaltMat", "asphalt", Color.white, Vector2.one, 0.28f));
+        }
+
+        _laneMat = laneLineMaterial;
+        if (drawLaneLine && _laneMat == null)
+        {
+            _laneMat = Track(MaterialLib.Solid("LaneLineMat", Color.white, 0f, 0.30f));
+        }
+
         int segCount = 0;
         int dashCount = 0;
 
-        // 每一对相邻路标点之间铺一段
+        // ---------- 每一对相邻路标点之间铺一段 ----------
         for (int i = 0; i < path.Count; i++)
         {
             int j = path.NextIndex(i);
@@ -93,23 +118,24 @@ public class RoadBuilder : MonoBehaviour
 
             // 材质：有贴图就建一个实例，按段长设平铺次数（每段长度不同，不能共用）
             MeshRenderer mr = seg.GetComponent<MeshRenderer>();
-            if (roadMaterial != null)
+            if (_roadMat != null)
             {
-                if (textureTileLength > 0.01f && roadMaterial.mainTexture != null)
+                if (textureTileLength > 0.01f && _roadMat.mainTexture != null)
                 {
-                    Material inst = new Material(roadMaterial);
+                    Material inst = new Material(_roadMat);
+                    inst.name = _roadMat.name + "_seg" + i;
                     inst.mainTextureScale = new Vector2(
                         roadWidth / textureTileLength,
                         fullLen / textureTileLength);
-                    mr.sharedMaterial = inst;
+                    mr.sharedMaterial = Track(inst);
                 }
                 else
                 {
-                    mr.sharedMaterial = roadMaterial;
+                    mr.sharedMaterial = _roadMat;
                 }
             }
 
-            if (drawLaneLine && laneLineMaterial != null)
+            if (drawLaneLine && _laneMat != null)
                 dashCount += BuildDashes(i, a, dir, len);
 
             segCount++;
@@ -143,29 +169,24 @@ public class RoadBuilder : MonoBehaviour
             dash.transform.localScale = new Vector3(dashWidth, 0.01f, l);
 
             StripCollider(dash);
-            dash.GetComponent<MeshRenderer>().sharedMaterial = laneLineMaterial;
+            dash.GetComponent<MeshRenderer>().sharedMaterial = _laneMat;
 
             count++;
         }
         return count;
     }
 
-    /// <summary>清掉上一次生成的 Road_* / Lane_*，顺手销毁自己 new 出来的材质实例</summary>
+    /// <summary>清掉上一次生成的 Road_* / Lane_*，以及自己造出来的材质</summary>
     void Clear()
     {
+        for (int i = 0; i < generatedMaterials.Count; i++)
+            if (generatedMaterials[i] != null) DestroyObj(generatedMaterials[i]);
+        generatedMaterials.Clear();
+
         for (int i = transform.childCount - 1; i >= 0; i--)
         {
             GameObject child = transform.GetChild(i).gameObject;
             if (!child.name.StartsWith("Road_") && !child.name.StartsWith("Lane_")) continue;
-
-            MeshRenderer mr = child.GetComponent<MeshRenderer>();
-            if (mr != null)
-            {
-                Material m = mr.sharedMaterial;
-                // 只销毁自己 new 的实例，别把用户拖进来的原材质删了
-                if (m != null && m != roadMaterial && m != laneLineMaterial)
-                    DestroyObj(m);
-            }
             DestroyObj(child);
         }
     }
@@ -174,6 +195,12 @@ public class RoadBuilder : MonoBehaviour
     {
         Collider col = go.GetComponent<Collider>();
         if (col != null) DestroyObj(col);
+    }
+
+    Material Track(Material m)
+    {
+        if (m != null) generatedMaterials.Add(m);
+        return m;
     }
 
     void DestroyObj(Object o)
