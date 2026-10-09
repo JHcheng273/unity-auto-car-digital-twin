@@ -36,12 +36,19 @@ public class UnityStatePacket
     public int wp;           // 当前 waypoint 下标
     public int lap;          // 圈数
     public bool has_front;   // 前方是否有障碍
+
+    // ↓ 2026-10-09 新增：MATLAB 仪表盘要用这几个
+    public float motor;      // 油门开度 0~1（执行器实际收到的）
+    public bool braking;     // 是否正在刹车
+    public int state;        // 状态机 0=Driving 1=Blocked 2=Finished
+    public bool accept;      // Unity 是否已勾选「接受 MATLAB 指令」
+    public float max_speed;  // 车的最大速度，仪表盘画刻度用
 }
 
 [Serializable]
 public class MatlabCommandPacket
 {
-    public float v_des;      // 期望速度（米/秒）
+    public float v_des;      // 期望速度（米/秒）；填 -1 表示"速度交给 Unity 自己算"
     public float steer_des;  // 期望转向；填 999 表示"转向交给 Unity 自己算"
     public bool brake;       // 强制刹车
     public int seq;          // 序号，用来看丢包
@@ -67,6 +74,7 @@ public class MatlabBridge : MonoBehaviour
     public Transform car;
     public MyFrontDetector detector;
     public AutoDrive drive;
+    public CarController carCtrl;
 
     [Header("调试")]
     [Tooltip("勾选后每秒在 Console 打印收发包数，用来确认通信通没通")]
@@ -101,6 +109,7 @@ public class MatlabBridge : MonoBehaviour
         if (car == null) car = transform;
         if (detector == null) detector = GetComponent<MyFrontDetector>();
         if (drive == null) drive = GetComponent<AutoDrive>();
+        if (carCtrl == null) carCtrl = GetComponent<CarController>();
 
         try
         {
@@ -194,12 +203,19 @@ public class MatlabBridge : MonoBehaviour
             y = Round(self.position.y),
             z = Round(self.position.z),
             yaw = Round(self.eulerAngles.y),
-            speed = Round(GetSpeed(self)),
-            steer = drive != null ? Round(drive.Steer) : 0f,
+            // 优先用执行器的真实速度/转向；拿不到才退回差分估算
+            speed = carCtrl != null ? Round(carCtrl.CurrentSpeed) : Round(GetSpeed(self)),
+            steer = carCtrl != null ? Round(carCtrl.Steering)
+                                    : (drive != null ? Round(drive.Steer) : 0f),
             front_dist = detector != null ? Round(detector.ObstacleDistance) : -1f,
             wp = drive != null ? drive.CurrentWaypointIndex : -1,
             lap = drive != null ? drive.LapCount : 0,
-            has_front = detector != null && detector.HasObstacle
+            has_front = detector != null && detector.HasObstacle,
+            motor = carCtrl != null ? Round(carCtrl.Motor) : 0f,
+            braking = carCtrl != null && carCtrl.Braking,
+            state = drive != null ? (int)drive.CurrentState : -1,
+            accept = acceptMatlabCommand,
+            max_speed = carCtrl != null ? carCtrl.maxSpeed : 5f
         };
         LastSent = p;
 
@@ -262,6 +278,29 @@ public class MatlabBridge : MonoBehaviour
     public bool GetBrakeCmd()
     {
         return enableNetwork && acceptMatlabCommand && IsConnected && Command.brake;
+    }
+
+    /// <summary>
+    /// MATLAB 想接管转向吗？
+    /// 返回 [-1,1] 就是接管值；返回 999 表示"转向交给 Unity 自己算"。
+    /// </summary>
+    public float GetSteerCmd()
+    {
+        if (!enableNetwork || !acceptMatlabCommand || !IsConnected) return 999f;
+        return Command.steer_des;
+    }
+
+    /// <summary>MATLAB 现在是不是在开车（速度或转向任一被接管）—— HUD 上显示用</summary>
+    public bool IsMatlabDriving
+    {
+        get
+        {
+            if (!enableNetwork || !acceptMatlabCommand || !IsConnected) return false;
+
+            bool speedTaken = Command.v_des >= 0f;
+            bool steerTaken = Command.steer_des >= -1f && Command.steer_des <= 1f;
+            return speedTaken || steerTaken;
+        }
     }
 
     void OnDestroy()

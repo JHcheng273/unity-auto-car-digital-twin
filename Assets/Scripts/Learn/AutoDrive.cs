@@ -15,6 +15,16 @@ public class AutoDrive : MonoBehaviour
     [Header("到达判定")]
     public float arrivalRadius = 2f;
 
+    [Header("MATLAB 接管（留空会自动从自己身上找 MatlabBridge）")]
+    public MatlabBridge bridge;
+
+    [Header("MATLAB 速度控制（期望速度 → 油门）")]
+    [Tooltip("前馈系数：期望速度 / 最大速度，直接给基础油门")]
+    [Range(0f, 1.5f)]
+    public float speedFeedForward = 1f;
+    [Tooltip("比例增益：速度误差 → 油门修正，越大跟得越紧")]
+    public float speedKp = 0.6f;
+
     [Header("避障")]
     [Tooltip("留空会自动从自己身上找 MyFrontDetector")]
     public MyFrontDetector detector;
@@ -55,6 +65,7 @@ public class AutoDrive : MonoBehaviour
             Debug.LogError("[AutoDrive] 这个物体上没有 CarController！请先 Add Component。", this);
 
         if (detector == null) detector = GetComponent<MyFrontDetector>();
+        if (bridge == null) bridge = GetComponent<MatlabBridge>();
 
         CurrentState = State.Driving;
         Debug.Log("[状态] → Driving");
@@ -75,11 +86,11 @@ public class AutoDrive : MonoBehaviour
 
     // ==================== 三个状态各自的行为 ====================
 
-    // 正常行驶：全速追点
+    // 正常行驶：追点 + 按「谁在开车」决定油门刹车
     void TickDriving()
     {
-        SteerTowardTarget();
-        car.SetInput(Steer, 1f);
+        ResolveControl(out float steer, out float motor, out bool brake);
+        car.SetInput(steer, motor, brake);
 
         if (AtTarget())
         {
@@ -87,14 +98,22 @@ public class AutoDrive : MonoBehaviour
             return;
         }
 
-        // 前方有东西 → 换状态
-        if (detector != null && detector.ObstacleDistance < slowDistance)
+        // 前方有东西 → 换状态。
+        // 但 MATLAB 接管速度时，避障决策归 MATLAB 管，本地不插手。
+        if (!HasMatlabSpeed() && detector != null && detector.ObstacleDistance < slowDistance)
             SetState(State.Blocked);
     }
 
     // 被挡住：减速 / 刹停，停稳后开始计时
     void TickBlocked()
     {
+        // MATLAB 接管了速度 → 本地避障让位，直接回去开车
+        if (HasMatlabSpeed())
+        {
+            SetState(State.Driving);
+            return;
+        }
+
         SteerTowardTarget();
 
         float d = detector.ObstacleDistance;
@@ -130,6 +149,53 @@ public class AutoDrive : MonoBehaviour
     }
 
     // ==================== 工具函数 ====================
+
+    /// <summary>MATLAB 是否在接管速度（v_des >= 0 就算接管）</summary>
+    bool HasMatlabSpeed()
+    {
+        return bridge != null && bridge.GetDesiredSpeed() >= 0f;
+    }
+
+    /// <summary>MATLAB 是否在接管转向（steer_des 落在 [-1,1] 就算接管）</summary>
+    bool HasMatlabSteer()
+    {
+        if (bridge == null) return false;
+        float s = bridge.GetSteerCmd();
+        return s >= -1f && s <= 1f;
+    }
+
+    /// <summary>
+    /// 把 MATLAB 的期望速度换算成油门开度。
+    /// 前馈项负责"大致给够"，比例项负责"差的补上" —— 只用比例会有稳态误差。
+    /// </summary>
+    float MatlabThrottle(float vDes)
+    {
+        float ff  = speedFeedForward * vDes / Mathf.Max(car.maxSpeed, 0.01f);
+        float err = vDes - car.CurrentSpeed;
+        return Mathf.Clamp01(ff + err * speedKp);
+    }
+
+    /// <summary>
+    /// 算出这一帧该给执行器的三个量。
+    /// 优先级：MATLAB 有指令就听 MATLAB，没有就用本地的路径跟踪。
+    /// </summary>
+    void ResolveControl(out float steer, out float motor, out bool brake)
+    {
+        SteerTowardTarget();
+
+        steer = Steer;      // 本地默认：朝目标点打方向
+        motor = 1f;         // 本地默认：全速
+        brake = false;
+
+        if (bridge == null) return;
+
+        if (HasMatlabSteer()) steer = bridge.GetSteerCmd();
+
+        float vDes = bridge.GetDesiredSpeed();
+        if (vDes >= 0f) motor = MatlabThrottle(vDes);
+
+        brake = bridge.GetBrakeCmd();
+    }
 
     void SetState(State s)
     {
