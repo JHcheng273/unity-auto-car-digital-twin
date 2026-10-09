@@ -19,9 +19,13 @@
 %   换算成油门开度 —— 纯比例会有稳态误差，加前馈才跟得准。
 %   刹车是布尔量，一给就按 CarController 的 brakeRate（12 m/s²）减速度刹。
 %
-% 【跑法】
-%   1. 先在 Unity 里按 Play（车的 Inspector 上勾选 MatlabBridge 的 Accept Matlab Command）
-%   2. 再在 MATLAB 命令窗口敲  unity_dashboard
+% 【跑法】★ 顺序很重要，反了就"永远无连接" ★
+%   1. 先在 MATLAB 命令窗口敲  unity_dashboard   ← 它先开始监听 5005，然后一直等
+%   2. 再回 Unity 按 Play
+%   为什么不能反过来：通信是"单向触发"的 ——
+%       Unity 发状态包 → MATLAB 收到后才回发指令 → Unity 收到回包才算"已连接"。
+%       如果先 Play 了 Unity 又停下，MATLAB 才开始监听，那它就永远等不到包。
+%       （先 Play 再开 MATLAB 也不是不行，但必须保证 Unity 一直还在 Play 中。）
 %   3. 关掉仪表盘窗口即停止，数据自动存成 CSV
 %
 % 需要 R2020b 及以上（udpport）。不需要任何工具箱。
@@ -51,11 +55,35 @@ D_SLOW = 9.0;    % 小于这个距离 → 减速
 TAU = 1.2;
 
 %% ===== 2. 建 UDP（先建，端口被占就直接报错退出，别留个空窗口）=====
+
+% 先清理同一个 MATLAB 会话里可能残留的 udpport。
+% 为什么会残留：脚本跑到一半按 Ctrl+C，收尾的 clear u 就不会执行，
+%   于是那个 udpport 对象一直占着 5005，下次再跑就报"端口被占用"。
+try
+    stale = udpportfind;
+    for k = 1:numel(stale)
+        try
+            if double(stale(k).LocalPort) == MATLAB_LISTEN_PORT
+                fprintf("发现残留的 udpport（正占用 %d），先清理掉…\n", MATLAB_LISTEN_PORT);
+                delete(stale(k));
+            end
+        catch
+        end
+    end
+    pause(0.2);
+catch
+    % udpportfind 不可用就算了，不影响主流程
+end
+
 try
     u = udpport("datagram", "IPV4", "LocalPort", MATLAB_LISTEN_PORT, "Timeout", 0.05);
 catch ME
-    error(['端口 %d 被占用了 —— 多半是上一次的脚本还在跑。\n' ...
-           '先关掉旧的图窗，或者在命令窗口敲 clear all 再试。\n原始错误：%s'], ...
+    error(['端口 %d 被占用了。按顺序排查：\n' ...
+           '  ① 旧的仪表盘图窗还开着吗？关掉它。\n' ...
+           '  ② 命令窗口敲 clear all，再重跑本脚本。\n' ...
+           '  ③ 还不行就关掉 MATLAB 重开 —— 僵尸端口只能这么清。\n' ...
+           '  （想快速诊断，在 MATLAB 里跑 check_link）\n' ...
+           '原始错误：%s'], ...
            MATLAB_LISTEN_PORT, ME.message);
 end
 fprintf("监听 %d，等待 Unity 数据…\n", MATLAB_LISTEN_PORT);
@@ -413,6 +441,24 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
 
     else
         pause(0.005);   % 没数据就让出 CPU，别空转烧满一个核
+
+        % 等太久还没收到任何包 → 直接在界面上说明原因，别让人干等
+        % （最常见就是：Unity 没在 Play，或者先 Play 了又停下才开 MATLAB）
+        if count == 0
+            waited = toc(t0);
+            if waited > 6
+                lblCtrlBig.Text = {
+                    sprintf('⚠ 已等 %.0f 秒，仍未收到 Unity 任何数据', waited)
+                    '请检查：① Unity 是否已按 Play（不是暂停）'
+                    '        ② 车的 Matlab Bridge 是否勾了 Enable Network'
+                    '        ③ Unity 的 Console 里有没有「已发 N 包」在涨'
+                };
+                lblCtrlBig.FontColor = [0.85 0.30 0.20];
+                lampConn.Color = [0.85 0.30 0.20];
+                lblConn.Text   = '未收到数据';
+                lblClock.Text  = sprintf('等待 Unity… %.0f 秒', waited);
+            end
+        end
     end
 end
 
