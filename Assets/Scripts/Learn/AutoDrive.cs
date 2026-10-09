@@ -19,11 +19,15 @@ public class AutoDrive : MonoBehaviour
     public MatlabBridge bridge;
 
     [Header("MATLAB 速度控制（期望速度 → 油门）")]
-    [Tooltip("前馈系数：期望速度 / 最大速度，直接给基础油门")]
+    [Tooltip("前馈系数：期望速度 / 最大速度，直接给基础油门。稳态精度全靠它，别乱改")]
     [Range(0f, 1.5f)]
     public float speedFeedForward = 1f;
-    [Tooltip("比例增益：速度误差 → 油门修正，越大跟得越紧")]
-    public float speedKp = 0.6f;
+    [Tooltip("比例增益：速度误差 → 油门修正。注意闭环增益 = 本值 × maxSpeed，" +
+             "超过 1 就会震荡（0.15 × 5 = 0.75，安全）")]
+    public float speedKp = 0.15f;
+    [Tooltip("比例项限幅（±多少油门），防止起步瞬间修正量过大导致超调")]
+    [Range(0f, 1f)]
+    public float speedCorrLimit = 0.30f;
 
     [Header("避障")]
     [Tooltip("留空会自动从自己身上找 MyFrontDetector")]
@@ -166,13 +170,22 @@ public class AutoDrive : MonoBehaviour
 
     /// <summary>
     /// 把 MATLAB 的期望速度换算成油门开度。
-    /// 前馈项负责"大致给够"，比例项负责"差的补上" —— 只用比例会有稳态误差。
+    ///
+    ///   油门 = 前馈(v_des / maxSpeed) + 限幅后的比例修正
+    ///
+    /// 为什么必须带前馈：只靠比例的话，稳态时 v = v_des 需要 err = 0，
+    /// 而 err = 0 时比例项输出 0，油门就归零了 —— 车会停，然后误差又出现，
+    /// 来回抖。前馈项让稳态油门正好等于"维持这个速度需要的量"。
+    ///
+    /// 为什么比例项要限幅：起步时 v_des − v 很大，比例项会瞬间拉满，
+    /// 车冲过头再回落，速度曲线变成锯齿。限幅后只是"温和地补一点"。
     /// </summary>
     float MatlabThrottle(float vDes)
     {
         float ff  = speedFeedForward * vDes / Mathf.Max(car.maxSpeed, 0.01f);
         float err = vDes - car.CurrentSpeed;
-        return Mathf.Clamp01(ff + err * speedKp);
+        float corr = Mathf.Clamp(err * speedKp, -speedCorrLimit, speedCorrLimit);
+        return Mathf.Clamp01(ff + corr);
     }
 
     /// <summary>
