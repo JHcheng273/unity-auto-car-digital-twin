@@ -44,7 +44,9 @@ public class WheelSpinner : MonoBehaviour
             if (car == null) return;
         }
 
-        float v = car.Motor * car.maxSpeed;                       // 当前线速度 米/秒
+        // 用 CurrentSpeed（实际速度）而不是 Motor*maxSpeed（目标速度）——
+        // 否则踩油门瞬间轮子就跳到最高速，刹车时又立刻停，看着很假。
+        float v = car.CurrentSpeed;                               // 当前线速度 米/秒
         float deg = v / Mathf.Max(radius, 0.01f)                  // 角速度 弧度/秒
                     * Mathf.Rad2Deg * Time.deltaTime;
 

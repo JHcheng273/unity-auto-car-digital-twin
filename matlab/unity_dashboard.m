@@ -72,14 +72,19 @@ lblClock = uilabel(fig, 'Text', '等待连接…', 'Position', [780 728 376 38],
         'FontSize', 15, 'HorizontalAlignment', 'right', 'FontColor', [0.38 0.42 0.48]);
 
 % ---------- 左列：车速表 ----------
+% 【R2025a 实测】uigauge 既没有 Title 也没有 Label 属性（只有 Limits / MajorTicks /
+%   MinorTicks / ScaleColors / ScaleColorLimits / FontSize / Value / Orientation），
+%   所以标题只能用外部的 uilabel 摆上去。
+uilabel(fig, 'Text', '车速 (km/h)', 'Position', [20 694 340 26], ...
+        'FontSize', 13, 'FontWeight', 'bold', 'HorizontalAlignment', 'center');
+
 gSpeed = uigauge(fig, 'semicircular');
-gSpeed.Position = [20 380 340 320];
+gSpeed.Position = [20 384 340 306];
 gSpeed.Limits = [0 60];
 gSpeed.MajorTicks = 0:10:60;
 gSpeed.MinorTicks = 0:5:60;
 gSpeed.ScaleColors = [0.22 0.65 0.36; 0.95 0.76 0.20; 0.90 0.28 0.22];
 gSpeed.ScaleColorLimits = [0 35; 35 50; 50 60];
-gSpeed.Title = '车速 (km/h)';
 gSpeed.FontSize = 11;
 
 lblSpeed = uilabel(fig, 'Text', '0.0', 'Position', [20 308 340 64], ...
@@ -94,35 +99,39 @@ lblPos   = uilabel(fig, 'Text', '位置  (-, -)','Position', [20 168 340 32], 'F
 lblState = uilabel(fig, 'Text', '状态机  --',  'Position', [20 130 340 32], 'FontSize', 14);
 
 % ---------- 中列：油门 / 刹车 / 转向 ----------
+% 同样：uigauge 没有 Title，标题用外置 uilabel（放在每个表上方 24px）
+uilabel(fig, 'Text', '油门开度 (%)', 'Position', [390 692 380 22], ...
+        'FontSize', 13, 'FontWeight', 'bold');
 gThr = uigauge(fig, 'linear');
-gThr.Position = [390 590 380 110];
+gThr.Position = [390 586 380 104];
 gThr.Limits = [0 100];
 gThr.MajorTicks = 0:25:100;
 gThr.MajorTickLabels = {'0','25','50','75','100'};
 gThr.Orientation = 'horizontal';
 gThr.ScaleColors = [0.25 0.60 0.90];
 gThr.ScaleColorLimits = [0 100];
-gThr.Title = '油门开度 (%)';
 
+uilabel(fig, 'Text', '刹车 (%)', 'Position', [390 562 380 22], ...
+        'FontSize', 13, 'FontWeight', 'bold');
 gBrk = uigauge(fig, 'linear');
-gBrk.Position = [390 470 380 110];
+gBrk.Position = [390 456 380 104];
 gBrk.Limits = [0 100];
 gBrk.MajorTicks = 0:50:100;
 gBrk.MajorTickLabels = {'0','50','100'};
 gBrk.Orientation = 'horizontal';
 gBrk.ScaleColors = [0.90 0.30 0.25];
 gBrk.ScaleColorLimits = [0 100];
-gBrk.Title = '刹车 (%)';
 
+uilabel(fig, 'Text', '转向 (%)   负 = 左   正 = 右', 'Position', [390 432 380 22], ...
+        'FontSize', 13, 'FontWeight', 'bold');
 gStr = uigauge(fig, 'linear');
-gStr.Position = [390 350 380 110];
+gStr.Position = [390 326 380 104];
 gStr.Limits = [-100 100];
 gStr.MajorTicks = -100:50:100;
 gStr.MajorTickLabels = {'左满','-50','0','50','右满'};
 gStr.Orientation = 'horizontal';
 gStr.ScaleColors = [0.38 0.45 0.85];
 gStr.ScaleColorLimits = [-100 100];
-gStr.Title = '转向 (%)   负 = 左   正 = 右';
 
 % ---------- 中列：指示灯 ----------
 GREY = [0.62 0.65 0.69];
@@ -181,10 +190,16 @@ sldS = uislider(pnl, 'Limits', [-1 1], 'Value', 0, 'MajorTicks', -1:0.5:1, ...
 lblS = uilabel(pnl, 'Text', '0.00', 'Position', [556 2 70 26], ...
         'FontSize', 15, 'FontWeight', 'bold');
 
+% 【R2025a 实测】uiswitch 的 Value 不是 true/false，而是 Items 里的某个字符串。
+%   直接写 sw.Value = true 会报「'Value' 必须为 'Items' 中的某个元素」。
 swBrk = uiswitch(pnl, 'slider', 'Position', [660 66 50 22]);
+swBrk.Items = {'关', '开'};
+swBrk.Value = '关';
 uilabel(pnl, 'Text', '刹车', 'Position', [720 66 60 22], 'FontSize', 12);
 
 swStop = uiswitch(pnl, 'toggle', 'Position', [660 20 60 26]);
+swStop.Items = {'关', '开'};
+swStop.Value = '关';
 uilabel(pnl, 'Text', '急停', 'Position', [730 22 60 22], 'FontSize', 12, ...
         'FontColor', [0.85 0.25 0.18]);
 
@@ -242,7 +257,11 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
         %% --- 4.2 按模式决策：给多快的速度、要不要刹车 ---
         mode = ddMode.Value;
 
-        if swStop.Value                          % 急停优先级最高
+        % uiswitch 的 Value 是字符串（'关' / '开'），不是 true/false
+        brakeSwitch = strcmp(swBrk.Value,  '开');
+        stopSwitch  = strcmp(swStop.Value, '开');
+
+        if stopSwitch                            % 急停优先级最高
             v_des = 0;  brake = true;
 
         elseif strcmp(mode, 'MATLAB 自动')
@@ -256,14 +275,14 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
 
         elseif strcmp(mode, 'MATLAB 手动')
             v_des = sldV.Value;
-            brake = swBrk.Value;
+            brake = brakeSwitch;
 
         else                                     % Unity 本地
             v_des = -1;  brake = false;           % -1 = 不接管速度
         end
 
         % 手动刹车开关：只要不是"Unity 本地"模式，拨了就刹
-        if ~strcmp(mode, 'Unity 本地') && swBrk.Value
+        if ~strcmp(mode, 'Unity 本地') && brakeSwitch
             brake = true;
         end
 
