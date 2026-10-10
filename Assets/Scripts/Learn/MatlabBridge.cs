@@ -104,27 +104,63 @@ public class MatlabBridge : MonoBehaviour
 
     void Start()
     {
-        if (!enableNetwork) { Debug.Log("[MatlabBridge] 未启用网络，纯本地模式"); return; }
+        Debug.Log("[MatlabBridge] ===== Start() 被调用了 =====");
+
+        if (!enableNetwork)
+        {
+            Debug.Log("[MatlabBridge] Enable Network 没勾 —— 纯本地模式，不联网");
+            return;
+        }
 
         if (car == null) car = transform;
         if (detector == null) detector = GetComponent<MyFrontDetector>();
         if (drive == null) drive = GetComponent<AutoDrive>();
         if (carCtrl == null) carCtrl = GetComponent<CarController>();
 
+        Debug.Log($"[MatlabBridge] 数据源：detector={(detector != null ? "有" : "无")}，" +
+                  $"drive={(drive != null ? "有" : "无")}，carCtrl={(carCtrl != null ? "有" : "无")}");
+
         try
         {
             _sendClient = new UdpClient();
-            _recvClient = new UdpClient(unityListenPort);
+            // 显式绑定：不写这一句的话，端口是运行到第一次 Send 时才隐式绑定的，
+            // 万一那时出错，报错信息会很含糊、也不知道是哪个端口的问题。
+            _recvClient = new UdpClient(AddressFamily.InterNetwork);
+            _recvClient.Client.SetSocketOption(SocketOptionLevel.Socket,
+                                               SocketOptionName.ReuseAddress, true);
+            _recvClient.Client.Bind(new IPEndPoint(IPAddress.Any, unityListenPort));
             _recvClient.Client.ReceiveTimeout = 200;
+
             _running = true;
             _recvThread = new Thread(ReceiveLoop) { IsBackground = true };
             _recvThread.Start();
-            Debug.Log($"[MatlabBridge] 已启动：发往 {matlabHost}:{matlabListenPort}，监听 {unityListenPort}");
+
+            Debug.Log($"[MatlabBridge] ✔ 已启动：发往 {matlabHost}:{matlabListenPort}，" +
+                      $"监听 {unityListenPort}（本机 {string.Join("/", GetLocalIPs())}）");
         }
         catch (Exception e)
         {
-            Debug.LogError($"[MatlabBridge] 启动失败（端口被占？）：{e.Message}");
+            Debug.LogError($"[MatlabBridge] ✘ 启动失败：{e.GetType().Name}: {e.Message}");
+            Debug.LogError($"[MatlabBridge] 监听端口 {unityListenPort} 如果被占，" +
+                           $"在 cmd 里跑：netstat -ano | findstr {unityListenPort}");
             enableNetwork = false;
+        }
+    }
+
+    /// <summary>列出本机所有 IPv4 地址，方便确认 Unity 到底绑在哪个网卡上</summary>
+    static string[] GetLocalIPs()
+    {
+        try
+        {
+            var list = new System.Collections.Generic.List<string>();
+            foreach (var ip in Dns.GetHostAddresses(Dns.GetHostName()))
+                if (ip.AddressFamily == AddressFamily.InterNetwork)
+                    list.Add(ip.ToString());
+            return list.Count > 0 ? list.ToArray() : new[] { "?" };
+        }
+        catch
+        {
+            return new[] { "?" };
         }
     }
 
@@ -161,6 +197,9 @@ public class MatlabBridge : MonoBehaviour
                 var cmd = JsonUtility.FromJson<MatlabCommandPacket>(json);
                 if (cmd != null)
                 {
+                    if (PacketsReceived == 0)
+                        Debug.Log("★ [MatlabBridge] 收到 MATLAB 的第一条指令 —— 双向链路已通！");
+
                     Command = cmd;
                     PacketsReceived++;
                     _lastRecvTime = Time.time;
@@ -183,12 +222,12 @@ public class MatlabBridge : MonoBehaviour
             SendState();
         }
 
-        // 3. 调试统计：每秒报一次收发情况，排查通信问题全靠它
-        if (logStats && Time.time - _lastStatsLog > 1f)
+        // 3. 调试统计：每 2 秒报一次收发情况，排查通信问题全靠它
+        if (logStats && Time.time - _lastStatsLog > 2f)
         {
             _lastStatsLog = Time.time;
-            Debug.Log($"[MatlabBridge] 已发 {_sentCount} 包 / 已收 {PacketsReceived} 包，" +
-                      $"MATLAB 连接 = {(IsConnected ? "是" : "否")}");
+            string state = IsConnected ? "已连接" : (PacketsReceived == 0 ? "未连接（MATLAB 没回包）" : "掉线");
+            Debug.Log($"[MatlabBridge] 已发 {_sentCount} 包 / 已收 {PacketsReceived} 包，MATLAB {state}");
         }
     }
 
