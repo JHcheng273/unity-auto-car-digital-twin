@@ -102,12 +102,17 @@ lblClock = uilabel(fig, 'Text', '等待连接…', 'Position', [780 728 376 38],
 % ---------- 左列：车速表 ----------
 % 【R2025a 实测】uigauge 既没有 Title 也没有 Label 属性（只有 Limits / MajorTicks /
 %   MinorTicks / ScaleColors / ScaleColorLimits / FontSize / Value / Orientation），
-%   所以标题只能用外部的 uilabel 摆上去。
-uilabel(fig, 'Text', '车速 (km/h)', 'Position', [20 694 340 26], ...
-        'FontSize', 13, 'FontWeight', 'bold', 'HorizontalAlignment', 'center');
+%   所以标题只能用外部的 uilabel 或 uipanel 的 Title 来做。
+%
+% 【布局思路】用 uipanel 把左列切成上下两块，标题嵌在边框上 ——
+%   比"外置 uilabel 摆在表上方"节省纵向空间，也不会跟表盘刻度贴在一起。
+%   左列总高：从 y=176 到 y=712（536px），让出顶部标题栏和底部控制台。
+pnlSpeed = uipanel(fig, 'Title', '车速', 'Position', [16 300 356 412], ...
+                   'FontSize', 13, 'FontWeight', 'bold', ...
+                   'BackgroundColor', [1 1 1]);
 
-gSpeed = uigauge(fig, 'semicircular');
-gSpeed.Position = [20 384 340 306];
+gSpeed = uigauge(pnlSpeed, 'semicircular');
+gSpeed.Position = [8 46 340 330];
 gSpeed.Limits = [0 60];
 gSpeed.MajorTicks = 0:10:60;
 gSpeed.MinorTicks = 0:5:60;
@@ -115,23 +120,31 @@ gSpeed.ScaleColors = [0.22 0.65 0.36; 0.95 0.76 0.20; 0.90 0.28 0.22];
 gSpeed.ScaleColorLimits = [0 35; 35 50; 50 60];
 gSpeed.FontSize = 11;
 
-lblSpeed = uilabel(fig, 'Text', '0.0', 'Position', [20 308 340 64], ...
-        'FontSize', 42, 'FontWeight', 'bold', 'HorizontalAlignment', 'center');
-uilabel(fig, 'Text', 'km/h', 'Position', [20 284 340 24], 'FontSize', 13, ...
+% 大号数字摆在表盘中心偏下（表盘是半圆，中间是空的，正好塞进去）
+lblSpeed = uilabel(pnlSpeed, 'Text', '0.0', 'Position', [8 118 340 62], ...
+        'FontSize', 40, 'FontWeight', 'bold', 'HorizontalAlignment', 'center');
+uilabel(pnlSpeed, 'Text', 'km/h', 'Position', [8 96 340 22], 'FontSize', 12, ...
         'HorizontalAlignment', 'center', 'FontColor', [0.45 0.48 0.53]);
 
-lblMile  = uilabel(fig, 'Text', '里程  0.0 m', 'Position', [20 244 165 32], 'FontSize', 14);
-lblLap   = uilabel(fig, 'Text', '圈数  0',     'Position', [195 244 165 32], 'FontSize', 14);
-lblWp    = uilabel(fig, 'Text', '目标点  WP-', 'Position', [20 206 340 32], 'FontSize', 14);
-lblPos   = uilabel(fig, 'Text', '位置  (-, -)','Position', [20 168 340 32], 'FontSize', 14);
-lblState = uilabel(fig, 'Text', '状态机  --',  'Position', [20 130 340 32], 'FontSize', 14);
+% ---------- 左列下半：运行信息 ----------
+pnlInfo = uipanel(fig, 'Title', '运行信息', 'Position', [16 172 356 120], ...
+                  'FontSize', 13, 'FontWeight', 'bold', ...
+                  'BackgroundColor', [1 1 1]);
+
+% 两列排布：左边 3 行，右边 3 行，每行 28px 高、间隔 2px
+lblMile  = uilabel(pnlInfo, 'Text', '里程   0.0 m',  'Position', [14 74 160 26], 'FontSize', 13);
+lblLap   = uilabel(pnlInfo, 'Text', '圈数   0',      'Position', [186 74 156 26], 'FontSize', 13);
+lblWp    = uilabel(pnlInfo, 'Text', '目标点   WP-',  'Position', [14 44 160 26], 'FontSize', 13);
+lblPos   = uilabel(pnlInfo, 'Text', '位置   (-,-)',  'Position', [186 44 156 26], 'FontSize', 13);
+lblState = uilabel(pnlInfo, 'Text', '状态机   --',   'Position', [14 14 328 26], 'FontSize', 13);
 
 % ---------- 中列：油门 / 刹车 / 转向 ----------
-% 同样：uigauge 没有 Title，标题用外置 uilabel（放在每个表上方 24px）
-uilabel(fig, 'Text', '油门开度 (%)', 'Position', [390 692 380 22], ...
-        'FontSize', 13, 'FontWeight', 'bold');
-gThr = uigauge(fig, 'linear');
-gThr.Position = [390 586 380 104];
+% 同样用 uipanel 分组：标题嵌在边框上，表盘放在面板内。
+% 中列 x 从 388 到 768（宽 380）。
+pnlThr = uipanel(fig, 'Title', '油门开度 (%)', 'Position', [388 578 380 96], ...
+                 'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+gThr = uigauge(pnlThr, 'linear');
+gThr.Position = [14 12 352 60];
 gThr.Limits = [0 100];
 gThr.MajorTicks = 0:25:100;
 gThr.MajorTickLabels = {'0','25','50','75','100'};
@@ -139,10 +152,10 @@ gThr.Orientation = 'horizontal';
 gThr.ScaleColors = [0.25 0.60 0.90];
 gThr.ScaleColorLimits = [0 100];
 
-uilabel(fig, 'Text', '刹车 (%)', 'Position', [390 562 380 22], ...
-        'FontSize', 13, 'FontWeight', 'bold');
-gBrk = uigauge(fig, 'linear');
-gBrk.Position = [390 456 380 104];
+pnlBrk = uipanel(fig, 'Title', '刹车 (%)', 'Position', [388 476 380 96], ...
+                 'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+gBrk = uigauge(pnlBrk, 'linear');
+gBrk.Position = [14 12 352 60];
 gBrk.Limits = [0 100];
 gBrk.MajorTicks = 0:50:100;
 gBrk.MajorTickLabels = {'0','50','100'};
@@ -150,10 +163,11 @@ gBrk.Orientation = 'horizontal';
 gBrk.ScaleColors = [0.90 0.30 0.25];
 gBrk.ScaleColorLimits = [0 100];
 
-uilabel(fig, 'Text', '转向 (%)   负 = 左   正 = 右', 'Position', [390 432 380 22], ...
-        'FontSize', 13, 'FontWeight', 'bold');
-gStr = uigauge(fig, 'linear');
-gStr.Position = [390 326 380 104];
+pnlStr = uipanel(fig, 'Title', '转向 (%)    负 = 左    正 = 右', ...
+                 'Position', [388 374 380 96], ...
+                 'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+gStr = uigauge(pnlStr, 'linear');
+gStr.Position = [14 12 352 60];
 gStr.Limits = [-100 100];
 gStr.MajorTicks = -100:50:100;
 gStr.MajorTickLabels = {'左满','-50','0','50','右满'};
@@ -161,29 +175,37 @@ gStr.Orientation = 'horizontal';
 gStr.ScaleColors = [0.38 0.45 0.85];
 gStr.ScaleColorLimits = [-100 100];
 
-% ---------- 中列：指示灯 ----------
+% ---------- 中列：指示灯（独立面板，四盏灯两行两列）----------
 GREY = [0.62 0.65 0.69];
 
-lampConn = uilamp(fig, 'Position', [400 296 26 26]);  lampConn.Color = GREY;
-lblConn  = uilabel(fig, 'Text', '未连接', 'Position', [436 293 150 30], 'FontSize', 13);
+pnlLamp = uipanel(fig, 'Title', '状态指示灯', 'Position', [388 240 380 128], ...
+                  'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
 
-lampCtrl = uilamp(fig, 'Position', [400 256 26 26]);  lampCtrl.Color = GREY;
-lblCtrl  = uilabel(fig, 'Text', '本地控制', 'Position', [436 253 150 30], 'FontSize', 13);
+lampConn = uilamp(pnlLamp, 'Position', [22 68 24 24]);  lampConn.Color = GREY;
+lblConn  = uilabel(pnlLamp, 'Text', '未连接', 'Position', [56 66 130 26], 'FontSize', 12.5);
 
-lampBrk  = uilamp(fig, 'Position', [600 296 26 26]);  lampBrk.Color = GREY;
-lblBrk   = uilabel(fig, 'Text', '刹车', 'Position', [636 293 120 30], 'FontSize', 13);
+lampCtrl = uilamp(pnlLamp, 'Position', [22 28 24 24]);  lampCtrl.Color = GREY;
+lblCtrl  = uilabel(pnlLamp, 'Text', '本地控制', 'Position', [56 26 130 26], 'FontSize', 12.5);
 
-lampObs  = uilamp(fig, 'Position', [600 256 26 26]);  lampObs.Color = GREY;
-lblObs   = uilabel(fig, 'Text', '前方障碍', 'Position', [636 253 120 30], 'FontSize', 13);
+lampBrk  = uilamp(pnlLamp, 'Position', [210 68 24 24]); lampBrk.Color = GREY;
+lblBrk   = uilabel(pnlLamp, 'Text', '刹车中', 'Position', [244 66 120 26], 'FontSize', 12.5);
 
+lampObs  = uilamp(pnlLamp, 'Position', [210 28 24 24]); lampObs.Color = GREY;
+lblObs   = uilabel(pnlLamp, 'Text', '前方有障碍', 'Position', [244 26 120 26], 'FontSize', 12.5);
+
+% ---------- 中列底部：谁在开车（大字提示条）----------
 lblCtrlBig = uilabel(fig, 'Text', '等待 Unity 数据…', ...
-        'Position', [390 190 380 48], 'FontSize', 16, 'FontWeight', 'bold', ...
-        'HorizontalAlignment', 'center', 'BackgroundColor', [1 1 1], ...
-        'FontColor', [0.35 0.38 0.44]);
+        'Position', [388 176 380 56], 'FontSize', 15, 'FontWeight', 'bold', ...
+        'HorizontalAlignment', 'center', 'VerticalAlignment', 'center', ...
+        'BackgroundColor', [1 1 1], 'FontColor', [0.35 0.38 0.44]);
 
 % ---------- 右列：实时曲线 ----------
-ax = uiaxes(fig, 'Position', [790 330 370 370]);
-ax.Title.String = '速度对比 (m/s)';
+% 右列 x 从 784 到 1164（宽 380）。
+% 曲线占上半，明细占下半，两块高度加起来 = 顶栏到控制台之间的距离。
+pnlChart = uipanel(fig, 'Title', '速度对比 (m/s)', 'Position', [784 464 380 248], ...
+                   'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+
+ax = uiaxes(pnlChart, 'Position', [12 10 356 200]);
 ax.XLabel.String = '时间 (s)';
 ax.YLabel.String = '速度';
 grid(ax, 'on'); hold(ax, 'on');
@@ -191,49 +213,64 @@ grid(ax, 'on'); hold(ax, 'on');
 hV    = animatedline(ax, 'Color', [0.16 0.42 0.86], 'LineWidth', 1.6);
 hVdes = animatedline(ax, 'Color', [0.92 0.36 0.16], 'LineStyle', '--', 'LineWidth', 1.3);
 hVmod = animatedline(ax, 'Color', [0.20 0.62 0.30], 'LineStyle', '-.', 'LineWidth', 1.3);
-legend(ax, {'实体速度','MATLAB 期望','孪生模型'}, 'Location', 'northwest', 'FontSize', 9);
+% 图例挪到东北角：原来放西北角会压住曲线起点的上升段
+legend(ax, {'实体速度','MATLAB 期望','孪生模型'}, 'Location', 'northeast', 'FontSize', 9);
 
 % ---------- 右列：数据明细 ----------
-lblMsg = uilabel(fig, 'Text', {'等待 Unity 数据…'}, ...
-        'Position', [790 180 370 140], 'FontSize', 12.5, ...
-        'VerticalAlignment', 'top', 'BackgroundColor', [1 1 1], ...
-        'FontColor', [0.22 0.25 0.31]);
+pnlDetail = uipanel(fig, 'Title', '数据明细', 'Position', [784 240 380 216], ...
+                    'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+lblMsg = uilabel(pnlDetail, 'Text', {'等待 Unity 数据…'}, ...
+        'Position', [12 10 356 178], 'FontSize', 12, ...
+        'VerticalAlignment', 'top', 'WordWrap', 'on', 'FontColor', [0.22 0.25 0.31]);
 
 % ---------- 底部：控制台 ----------
-pnl = uipanel(fig, 'Title', '控制台', 'Position', [20 20 1140 145], 'FontSize', 13);
+pnl = uipanel(fig, 'Title', '控制台', 'Position', [16 16 1148 148], 'FontSize', 13);
 
-uilabel(pnl, 'Text', '运行模式', 'Position', [20 100 120 22], 'FontSize', 12);
+% 第 1 组：运行模式
+uilabel(pnl, 'Text', '运行模式', 'Position', [18 106 120 22], 'FontSize', 12, ...
+        'FontWeight', 'bold');
 ddMode = uidropdown(pnl, 'Items', {'MATLAB 自动','MATLAB 手动','Unity 本地'}, ...
-        'Value', 'MATLAB 自动', 'Position', [20 62 190 30]);
+        'Value', 'MATLAB 自动', 'Position', [18 68 190 30]);
 
-uilabel(pnl, 'Text', '目标速度 (m/s)', 'Position', [240 100 200 22], 'FontSize', 12);
+% 第 2 组：目标速度滑块
+uilabel(pnl, 'Text', '目标速度 (m/s)', 'Position', [232 106 200 22], 'FontSize', 12, ...
+        'FontWeight', 'bold');
 sldV = uislider(pnl, 'Limits', [0 8], 'Value', V_MAX, 'MajorTicks', 0:2:8, ...
-        'Position', [240 78 300 3]);
-lblV = uilabel(pnl, 'Text', sprintf('%.1f', V_MAX), 'Position', [556 62 70 26], ...
+        'Position', [232 84 280 3]);
+lblV = uilabel(pnl, 'Text', sprintf('%.1f', V_MAX), 'Position', [524 74 60 28], ...
         'FontSize', 15, 'FontWeight', 'bold');
 
-uilabel(pnl, 'Text', '手动转向（负 = 左，正 = 右）', 'Position', [240 40 280 22], 'FontSize', 12);
+% 第 3 组：手动转向滑块
+uilabel(pnl, 'Text', '手动转向（负 = 左，正 = 右）', 'Position', [232 46 280 22], 'FontSize', 12, ...
+        'FontWeight', 'bold');
 sldS = uislider(pnl, 'Limits', [-1 1], 'Value', 0, 'MajorTicks', -1:0.5:1, ...
-        'Position', [240 18 300 3]);
-lblS = uilabel(pnl, 'Text', '0.00', 'Position', [556 2 70 26], ...
+        'Position', [232 24 280 3]);
+lblS = uilabel(pnl, 'Text', '0.00', 'Position', [524 14 60 28], ...
         'FontSize', 15, 'FontWeight', 'bold');
 
+% 第 4 组：两个开关（分开摆，各自带标签，不再挤在一起）
 % 【R2025a 实测】uiswitch 的 Value 不是 true/false，而是 Items 里的某个字符串。
 %   直接写 sw.Value = true 会报「'Value' 必须为 'Items' 中的某个元素」。
-swBrk = uiswitch(pnl, 'slider', 'Position', [660 66 50 22]);
+uilabel(pnl, 'Text', '强制刹车', 'Position', [620 106 80 22], 'FontSize', 12, ...
+        'FontWeight', 'bold');
+swBrk = uiswitch(pnl, 'slider', 'Position', [620 66 50 22]);
 swBrk.Items = {'关', '开'};
 swBrk.Value = '关';
-uilabel(pnl, 'Text', '刹车', 'Position', [720 66 60 22], 'FontSize', 12);
 
-swStop = uiswitch(pnl, 'toggle', 'Position', [660 20 60 26]);
+uilabel(pnl, 'Text', '急停', 'Position', [620 46 80 22], 'FontSize', 12, ...
+        'FontWeight', 'bold', 'FontColor', [0.85 0.25 0.18]);
+swStop = uiswitch(pnl, 'toggle', 'Position', [620 16 60 26]);
 swStop.Items = {'关', '开'};
 swStop.Value = '关';
-uilabel(pnl, 'Text', '急停', 'Position', [730 22 60 22], 'FontSize', 12, ...
-        'FontColor', [0.85 0.25 0.18]);
 
-lblSend = uilabel(pnl, 'Text', '已下发 0 条指令', 'Position', [820 70 300 28], 'FontSize', 13);
-lblStat = uilabel(pnl, 'Text', '收包 0', 'Position', [820 36 300 28], ...
-        'FontSize', 13, 'FontColor', [0.45 0.48 0.53]);
+% 第 5 组：收发统计
+uilabel(pnl, 'Text', '通信统计', 'Position', [740 106 200 22], 'FontSize', 12, ...
+        'FontWeight', 'bold');
+lblSend = uilabel(pnl, 'Text', '已下发 0 条指令', 'Position', [740 74 380 26], 'FontSize', 12.5);
+lblStat = uilabel(pnl, 'Text', '收包 0 条', 'Position', [740 44 380 26], ...
+        'FontSize', 12.5, 'FontColor', [0.45 0.48 0.53]);
+lblRate = uilabel(pnl, 'Text', '速率 --', 'Position', [740 14 380 26], ...
+        'FontSize', 12.5, 'FontColor', [0.45 0.48 0.53]);
 
 % 滑块实时显示数字
 sldV.ValueChangedFcn = @(s,e) set(lblV, 'Text', sprintf('%.1f', s.Value));
@@ -419,6 +456,12 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
         lblClock.Text = char(datetime('now', 'Format', 'HH:mm:ss'));
         lblSend.Text  = sprintf('已下发 %d 条指令', seq);
         lblStat.Text  = sprintf('收包 %d 条', count);
+
+        % 收包速率：用累计包数 / 已运行秒数。跑够 2 秒才算，否则开头会跳得很夸张。
+        elapsed = toc(t0);
+        if elapsed > 2
+            lblRate.Text = sprintf('速率 %.1f 包/秒   已运行 %.0f 秒', count / elapsed, elapsed);
+        end
 
         %% --- 4.7 记录 ---
         if nlog < MAXLOG
