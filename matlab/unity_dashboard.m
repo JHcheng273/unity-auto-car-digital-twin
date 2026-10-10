@@ -28,6 +28,21 @@
 %       （先 Play 再开 MATLAB 也不是不行，但必须保证 Unity 一直还在 Play 中。）
 %   3. 关掉仪表盘窗口即停止，数据自动存成 CSV
 %
+% 【★ 常驻模式（2026-10-10 改）★】
+%   这个脚本现在**不会自己超时退出**了，行为是：
+%     · 开一次就一直挂着，Unity 按多少次 Play 都行；
+%     · Unity 停 Play → 界面自动回到"等待 Unity…"，但**累计量不清零**
+%       （里程 / 曲线 / 收包数都留着，方便你对比多轮实验）；
+%     · 想清零重开，就关掉窗口再跑一次脚本（或按下面的重连计数看第几轮）。
+%   好处：不用每次 Play 前都回 MATLAB 敲一遍命令 —— 开机跑一次就扔那儿。
+%
+% 【为什么不在 Unity 里自动拉起 MATLAB】
+%   Unity 侧确实能 Process.Start 拉起 MATLAB，但代价很大：
+%     · MATLAB 空载约 1.5 GB 内存 + 启动 20 秒；
+%     · 每按一次 Play 就新开一个，连续试几次机器直接卡死；
+%     · 自动拉起的那个 MATLAB 是"黑窗口"，你没法在上面拖滑块调参。
+%   所以正确做法是反过来：**MATLAB 常驻，Unity 随便连**。
+%
 % 需要 R2020b 及以上（udpport）。不需要任何工具箱。
 %
 % 【R2025a 实测要点 2026-10-08】
@@ -41,8 +56,11 @@ UNITY_IP           = "127.0.0.1";   % 同一台电脑；跨机填 Unity 那台�
 MATLAB_LISTEN_PORT = 5005;          % MATLAB 监听（Unity 往这发状态）
 UNITY_LISTEN_PORT  = 5006;          % Unity 监听（MATLAB 往这发指令）
 
-RUN_SECONDS = 600;   % 最长跑多久（关窗即停）
+RUN_SECONDS = Inf;   % ★ 常驻：不因超时退出，只有关窗口才停
+                     %   （想限时跑就写个秒数，比如 300 = 5 分钟后自动停并存 CSV）
 PLOT_EVERY  = 2;     % 每收几包刷一次曲线（太频繁会卡）
+RECONNECT_GAP = 3;   % 秒。超过这么久没收到包算"Unity 断开"，界面切回等待态
+                     %   （Unity 停 Play 后本来就不再发包，用它来判定断开）
 
 % ---- MATLAB 自动模式的决策阈值 ----
 % 注意：Unity 的 CarController.maxSpeed 是 5，所以 V_MAX 别超过 5，留点余量
@@ -280,8 +298,19 @@ sldS.ValueChangedFcn = @(s,e) set(lblS, 'Text', sprintf('%.2f', s.Value));
 t0 = tic;
 seq = 0; count = 0;
 s_actual = 0; v_model = 0; s_model = 0;
+% t_prev 先留空：它是"位置差分"的基准，每轮重连都必须清掉，
+% 否则拿上一轮末尾的位置减这一轮开头的位置，会算出几百米的假里程。
 t_prev = []; pos_prev = [];
 v_des = 0; brake = false; steer_des = 999;
+
+% ---- 常驻/重连相关 ----
+last_rx   = NaN;   % 最后一次收到包的时刻（toc 值）；NaN = 还没收到过
+sessCount = 0;     % 这是第几轮连接（Unity 每 Play 一次算一轮）
+connected = false; % 当前是否处于"已连上"状态
+nWaiting  = 0;     % 累计"没人发包"的循环次数，用来控制界面提示刷新频率
+prevCount = 0;     % 上一秒的收包数，用来算**瞬时**速率（不是累计平均）
+rateT     = 0;     % 上次刷新速率的时刻（MATLAB 变量名不能以下划线开头，所以叫 rateT）
+v_model_sess = 0;  % 本轮开始时的孪生转速（重连后从当前车速接上去，不跳变）
 
 % 预分配日志数组（循环里用 end+1 增长数组每次都要重新分配内存，很慢，MATLAB 也会警告）
 MAXLOG = 50000;
@@ -307,6 +336,23 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
         end
 
         count = count + 1;
+
+        %% --- 4.0 新会话检测（常驻模式的核心）---
+        % 情形 A：第一次收包            → 开一轮
+        % 情形 B：隔了 RECONNECT_GAP 秒以上才又来包 → 说明 Unity 中途停过 Play，开新一轮
+        if isnan(last_rx) || (toc(t0) - last_rx) > RECONNECT_GAP
+            sessCount = sessCount + 1;
+            % ★ 位置差分基准要连 pos_prev 一起清！
+            %   只清 t_prev 的话，重连后仍是拿「停 Play 前那个位置」和「新 Play 的当前位置」
+            %   相减 —— 会把中间静止的那几秒也算成里程，凭空多出好几米。
+            t_prev   = [];
+            pos_prev = [];
+            v_model  = v_model_sess;   % 孪生转速接着上次，别跳回 0
+            clearpoints(hV);  clearpoints(hVdes);  clearpoints(hVmod);   % 曲线另起一段
+            fprintf("[第 %d 轮] 收到 Unity 数据，链路已建立\n", sessCount);
+        end
+        last_rx   = toc(t0);
+        connected = true;
 
         %% --- 4.1 实体走了多远（位置差分，不依赖 Unity 的 speed 字段）---
         if isempty(pos_prev)
@@ -455,12 +501,16 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
 
         lblClock.Text = char(datetime('now', 'Format', 'HH:mm:ss'));
         lblSend.Text  = sprintf('已下发 %d 条指令', seq);
-        lblStat.Text  = sprintf('收包 %d 条', count);
+        lblStat.Text  = sprintf('收包 %d 条   第 %d 轮连接', count, sessCount);
 
-        % 收包速率：用累计包数 / 已运行秒数。跑够 2 秒才算，否则开头会跳得很夸张。
+        % 收包速率：用"最近 1 秒新增多少包"算，才是真实速率。
+        % （原来用 累计包数/总秒数，一旦断开重连，这个数会被历史拖住，看不出当前状态）
         elapsed = toc(t0);
-        if elapsed > 2
-            lblRate.Text = sprintf('速率 %.1f 包/秒   已运行 %.0f 秒', count / elapsed, elapsed);
+        if elapsed - rateT > 1
+            lblRate.Text = sprintf('速率 %.1f 包/秒   已运行 %.0f 秒', ...
+                                   (count - prevCount) / (elapsed - rateT), elapsed);
+            prevCount = count;
+            rateT     = elapsed;
         end
 
         %% --- 4.7 记录 ---
@@ -484,28 +534,53 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
 
     else
         pause(0.005);   % 没数据就让出 CPU，别空转烧满一个核
+        nWaiting = nWaiting + 1;
 
-        % 等太久还没收到任何包 → 直接在界面上说明原因，别让人干等
-        % （最常见就是：Unity 没在 Play，或者先 Play 了又停下才开 MATLAB）
-        if count == 0
+        % 没数据时的界面提示（每约 0.5 秒刷一次，别每帧都刷）
+        if mod(nWaiting, 100) == 0
             waited = toc(t0);
-            if waited > 6
-                lblCtrlBig.Text = {
-                    sprintf('⚠ 已等 %.0f 秒，仍未收到 Unity 任何数据', waited)
-                    '请检查：① Unity 是否已按 Play（不是暂停）'
-                    '        ② 车的 Matlab Bridge 是否勾了 Enable Network'
-                    '        ③ Unity 的 Console 里有没有「已发 N 包」在涨'
-                };
-                lblCtrlBig.FontColor = [0.85 0.30 0.20];
-                lampConn.Color = [0.85 0.30 0.20];
-                lblConn.Text   = '未收到数据';
-                lblClock.Text  = sprintf('等待 Unity… %.0f 秒', waited);
+
+            if isnan(last_rx)
+                %% 从头到尾一个包都没收到
+                if waited > 6
+                    lblCtrlBig.Text = {
+                        sprintf('⚠ 已等 %.0f 秒，仍未收到 Unity 任何数据', waited)
+                        '请检查：① Unity 是否已按 Play（不是暂停）'
+                        '        ② 车的 Matlab Bridge 是否勾了 Enable Network'
+                        '        ③ Unity 的 Console 里有没有「已发 N 包」在涨'
+                    };
+                    lblCtrlBig.FontColor = [0.85 0.30 0.20];
+                    lampConn.Color = [0.85 0.30 0.20];
+                    lblConn.Text   = '未收到数据';
+                    lblClock.Text  = sprintf('等待 Unity… %.0f 秒', waited);
+                end
+
+            elseif (waited - last_rx) > RECONNECT_GAP && connected
+                %% ★ 曾经连上过，现在断了 —— 切回等待态，但累计量保留
+                connected = false;
+                lampConn.Color = [0.93 0.72 0.20];
+                lblConn.Text   = 'Unity 已断开';
+                lampCtrl.Color = GREY;
+                lblCtrl.Text   = '待连接';
+                lblCtrlBig.Text = sprintf('Unity 已停止（第 %d 轮已结束），仍在监听 %d 端口…', ...
+                                          sessCount, MATLAB_LISTEN_PORT);
+                lblCtrlBig.FontColor = [0.75 0.55 0.10];
+                fprintf("[第 %d 轮] Unity 已断开，回到等待状态（累计 %d 包，数据保留）\n", ...
+                        sessCount, count);
+                v_model_sess = v_model;      % 记下当前孪生转速，下一轮从这儿接着算
+            end
+
+            % 等待中也要让时钟走，不然看起来像死了
+            if ~connected
+                lblClock.Text = sprintf('等待 Unity…（已 %d 轮）', sessCount);
             end
         end
     end
 end
 
 %% ===== 5. 收尾：存 CSV + 打印统计 =====
+% 常驻模式（RUN_SECONDS = Inf）下，走到这里只有一种可能：**你关掉了窗口**。
+% 所以这里可以放心当作"实验结束"，存盘 + 打统计。
 clear u;
 
 if nlog > 0
@@ -522,12 +597,13 @@ if nlog > 0
     err = lg_v - lg_vm;
 
     fprintf("\n===== 运行结果 =====\n");
-    fprintf("收到 %d 包，已保存 %s\n", count, fname);
+    fprintf("共 %d 轮连接，收到 %d 包，已保存 %s\n", sessCount, count, fname);
     fprintf("实体平均速度 %.2f m/s | 孪生模型平均速度 %.2f m/s\n", mean(lg_v), mean(lg_vm));
     fprintf("速度偏差：均值 %.3f，RMS %.3f，最大 %.3f m/s\n", ...
         mean(err), sqrt(mean(err.^2)), max(abs(err)));
     fprintf("实体累计里程 %.2f m | 孪生里程 %.2f m\n", s_actual, s_model);
     fprintf("提示：偏差 RMS 越小，说明 TAU 这个模型参数标定得越准。\n");
+    fprintf("注：曲线在每次重连时会另起一段，但 CSV 里的 t 是连续的，画图不受影响。\n");
 else
     fprintf("\n一个包都没收到。按顺序检查：\n");
     fprintf("  1. Unity 按 Play 了吗？\n");

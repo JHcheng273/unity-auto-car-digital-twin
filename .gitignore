@@ -43,5 +43,13 @@
 Thumbs.db
 desktop.ini
 
+# ===== MATLAB 运行产物（每次跑都新生成一个，不该进仓库）=====
+matlab/dash_log_*.csv
+matlab/twin_log_*.csv
+
+# ===== MATLAB 脚本改动的本地备份（.bak_ 开头）=====
+*.bak_*
+matlab/_cc.txt
+
 # ===== 本会话的工作目录（不是项目文件）=====
 .workbuddy-ai/
