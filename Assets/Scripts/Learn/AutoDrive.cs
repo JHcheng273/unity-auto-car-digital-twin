@@ -52,6 +52,27 @@ public class AutoDrive : MonoBehaviour
     public int LapCount { get; private set; }
     public int CurrentWaypointIndex => _index;
 
+    /// <summary>
+    /// 当前正在追的那个航点的世界坐标。
+    /// 给 AvoidanceDriver 用 —— 它要拿这个当 A* 的目标点。
+    /// （只读，不改变任何行为）
+    /// </summary>
+    public Vector3 CurrentTargetPoint => path != null ? path.GetPoint(_index) : transform.position;
+
+    /// <summary>
+    /// 强制跳过当前航点，去追下一个。
+    /// 给 AvoidanceDriver 用：绕障实在绕不过去时，跳过这个点免得卡死。
+    /// 复用已有的 AdvanceWaypoint，所以圈数统计、Finished 判定都照常生效。
+    /// </summary>
+    public void ForceSkipWaypoint()
+    {
+        if (path == null || path.Count == 0) return;
+
+        int before = _index;
+        AdvanceWaypoint();
+        Debug.Log($"[AutoDrive] 被绕障接管层要求跳过：WP{before} → WP{_index}");
+    }
+
     int _index;          // 现在正在追第几个点
     float _blockedTime;  // 已经被堵了多久
 
