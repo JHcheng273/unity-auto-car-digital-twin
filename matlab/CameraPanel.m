@@ -46,15 +46,46 @@ classdef CameraPanel < handle
             if nargin < 2 || isempty(pos), pos = [20 20 380 300]; end
 
             obj.Panel = uipanel(parent, 'Title', '车载摄像头 · 实时路况', ...
-                'Position', pos, 'FontSize', 13, 'FontWeight', 'bold', ...
+                'Position', pos, 'FontSize', 12.5, 'FontWeight', 'bold', ...
                 'BackgroundColor', obj.baseColor);
 
-            % ---- 画面区 ----
-            % 面板内部坐标是相对的，减去标题栏高度（约 30px）再留边距
-            innerW = pos(3) - 24;
-            innerH = max(60, pos(4) - 96);
+            % ---- 内部纵向分区（★ 全部按 pos(4) 算）----
+            % 踩过的坑：原来写死"上方留 96 给标题+状态+提示"，
+            %   面板高 472 时画面区还剩 376，看着正常；
+            %   但窗口一旦被系统压缩，pos(4) 变小而 96 不变，
+            %   画面区不但变矮，还会被下面两个 label 盖住 ——
+            %   于是看起来"画面是一条、字还重叠"。
+            % 现在：先给底部留固定高度的两条文字，剩下的全给画面。
+            %
+            % ★★ 还有个更隐蔽的坑：**画面区必须保持图像本身的宽高比**。
+            %   摄像头出来是 240×180（4:3 横的），但第四列被压到只有 293 宽，
+            %   剩下的高度 420 全给画面区的话就是 271×420 —— 一个**竖长条**。
+            %   把 4:3 的横图塞进竖长条，画面就会被纵向拉伸 + 上下留黑，
+            %   看着像"只有一条"或者"图变形了"。
+            %   正确做法：在可用框里做**等比缩放**（letterbox），
+            %   算出一个同样是 4:3 的内框，水平居中、垂直居中。
+            innerW = max(80, pos(3) - 22);
+            STATUS_H = 26;                   % 状态条高
+            HINT_H   = 20;                   % 提示小字高
+            BOT_PAD  = 10;
+            bottomBlk = BOT_PAD + HINT_H + 6 + STATUS_H;   % 底部文字块总高
+            statusY   = BOT_PAD + HINT_H + 6;
+            hintY     = BOT_PAD;
+            imgY = bottomBlk + 6;
+            boxH = max(70, pos(4) - imgY - 8);   % 可用框
+            boxW = innerW;
 
-            obj.ax = uiaxes(obj.Panel, 'Position', [12, 74, innerW, innerH]);
+            % 等比缩放（源图 240×180 = 4:3）
+            srcAR = 240 / 180;
+            if boxW / boxH > srcAR
+                fitH = boxH;  fitW = round(boxH * srcAR);   % 框太宽 → 左右留白
+            else
+                fitW = boxW;  fitH = round(boxW / srcAR);   % 框太高 → 上下留白
+            end
+            fitX = 11 + round((boxW - fitW) / 2);
+            fitY = imgY + round((boxH - fitH) / 2);
+
+            obj.ax = uiaxes(obj.Panel, 'Position', [fitX, fitY, fitW, fitH]);
             obj.ax.XTick = [];  obj.ax.YTick = [];
             obj.ax.Box = 'on';
             obj.ax.XLim = [0.5 240.5];
@@ -68,15 +99,18 @@ classdef CameraPanel < handle
             obj.imgHandle.AlphaDataMapping = 'none';
 
             % ---- 状态条 ----
+            % ★ WordWrap 打开：偏离信息有时候很长（"偏离！横向 13.4 m + 夹角 42°"），
+            %   窄面板下一行放不下会被直接裁掉右半截 —— 截图里就是这个现象。
             obj.lblStatus = uilabel(obj.Panel, 'Text', '等待画面…', ...
-                'Position', [12, 40, innerW, 26], 'FontSize', 13, ...
-                'FontWeight', 'bold', 'FontColor', [0.35 0.38 0.44]);
+                'Position', [11, statusY, innerW, STATUS_H], 'FontSize', 12, ...
+                'FontWeight', 'bold', 'WordWrap', 'on', ...
+                'FontColor', [0.35 0.38 0.44]);
 
             obj.lblHint = uilabel(obj.Panel, ...
                 'Text', sprintf('偏离判定：横向 > %.1f m 或 夹角 > %.0f°', ...
                                 obj.devDistLimit, obj.devAngLimit), ...
-                'Position', [12, 14, innerW, 22], 'FontSize', 11, ...
-                'FontColor', [0.50 0.53 0.58]);
+                'Position', [11, hintY, innerW, HINT_H], 'FontSize', 10.5, ...
+                'WordWrap', 'on', 'FontColor', [0.50 0.53 0.58]);
         end
 
         %% ---------- 每轮更新 ----------
@@ -137,10 +171,10 @@ classdef CameraPanel < handle
         %SETFPS 把显示帧率和收包统计写到底部小字里。
             if nargin < 3 || isempty(rxInfo), rxInfo = ''; end
             if fps > 0
-                txt = sprintf('偏离判定：横向 > %.1f m 或 夹角 > %.0f°   ·   画面 %.1f 帧/秒%s', ...
+                txt = sprintf('阈值 横向 %.1f m / 夹角 %.0f°   画面 %.1f fps%s', ...
                               obj.devDistLimit, obj.devAngLimit, fps, rxInfo);
             else
-                txt = sprintf('偏离判定：横向 > %.1f m 或 夹角 > %.0f°%s', ...
+                txt = sprintf('阈值 横向 %.1f m / 夹角 %.0f°%s', ...
                               obj.devDistLimit, obj.devAngLimit, rxInfo);
             end
             obj.lblHint.Text = txt;

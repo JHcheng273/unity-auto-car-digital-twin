@@ -62,3 +62,9 @@ matlab/_cc.txt
 
 # ===== 本会话的工作目录（不是项目文件）=====
 .workbuddy-ai/
+
+# ===== 布局验证产物（临时截图，随时可重生成）=====
+tools/layout_render_check.png
+tools/_c*.png
+tools/vr_*.png
+tools/layout_math_check.m

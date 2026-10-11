@@ -148,67 +148,188 @@ if ENABLE_VIDEO
     end
 end
 
-%% ===== 3. 建仪表盘 =====
+%% ===== 3. 建仪表盘（★ 布局全部按屏幕尺寸算，不写死）=====
+% ★★ 这里原来写死了 1560×780。踩的坑：
+%   用户的屏幕是 1280×800，窗口比屏幕还宽 —— Windows 会把窗口"塞"进屏幕，
+%   于是所有 uipanel / uigauge 的绝对像素坐标跟着被压缩，
+%   表盘刻度、状态文字全挤在一起，摄像头画面也被压成一条。
+%   结论：**uifigure 里所有 Position 都是绝对像素，窗口一旦被系统缩放就全乱。**
+%   所以正确做法是：先量屏幕 → 由屏幕尺寸推出每个格子的坐标 → 再给窗口。
+%
+%   设计目标：4 列（车速 / 油门刹车转向 / 曲线 / 摄像头）横向铺满，
+%   下面一条控制台。屏幕窄的时候自动压缩边距和列间距，不缩字号。
 BG = [0.93 0.94 0.96];
-% ★ 窗口比原来宽了 400px：右边新开一列放摄像头。
-%   原来三列是 [16..] [388..] [784..]，各宽 380、右边界 1164；
-%   现在再加一列 [1180..]，宽 380、右边界 1560，窗口留到 1580。
-FIG_W = 1560;
+
+% ---- 量屏幕可用区 ----
+% MonitorPositions 第 1 行是主显示器 [x y w h]（含任务栏）。
+% 减掉一些留给任务栏和窗口标题栏，别顶满屏。
+scr = get(0, 'MonitorPositions');
+if isempty(scr) || size(scr,1) < 1
+    scr = [1 1 1280 800];               % 量不到就给个保守默认值
+end
+SCR_W = scr(1,3);
+SCR_H = scr(1,4);
+
+% ★ 目标窗口尺寸：屏幕的 96% 宽 / 92% 高，且不超过"原始设计尺寸"。
+%   为什么还要设上限：屏幕特别大（比如 2560 宽）时不必拉那么宽，
+%   拉太宽反而字和面板之间空得难受，1560 是我们调过视觉最舒服的宽度。
+WIN_W = min(round(SCR_W * 0.96), 1560);
+WIN_H = min(round(SCR_H * 0.92), 800);
+WIN_W = max(WIN_W, 1100);               % 下限，再小就真的放不下了
+WIN_H = max(WIN_H, 720);
+
+% 窗口位置：居中摆
+WIN_X = max(1, round((SCR_W - WIN_W) / 2));
+WIN_Y = max(1, round((SCR_H - WIN_H) / 2));
+
+% ---- 由窗口尺寸推出布局网格 ----
+M        = 12;                          % 外边距（屏幕窄了就小一点，省地方）
+GAP      = 10;                          % 面板之间的缝
+TOP_H    = 46;                          % 顶部标题栏高度
+CTRL_H   = 152;                         % 底部控制台高度
+
+% 可用绘图区（给卡片用的矩形）
+BODY_X  = M;
+BODY_Y  = M + CTRL_H + GAP;             % 控制台上方
+BODY_W  = WIN_W - 2*M;
+BODY_H  = WIN_H - TOP_H - CTRL_H - 2*M - GAP;
+
+% ★ 4 列宽度：等分。总宽减去 3 道缝再除 4。
+COL_W = floor((BODY_W - 3*GAP) / 4);
+COL_X = zeros(1,4);
+for c = 1:4
+    COL_X(c) = BODY_X + (c-1) * (COL_W + GAP);
+end
+% 最后一列右边界对齐（抵消 floor 的取整误差）
+RIGHT_EDGE = BODY_X + BODY_W;
+
+FIG_W = WIN_W;                          % 后面控制台宽度要用
+
 fig = uifigure('Name', 'Unity 数字孪生 · 实时驾驶仪表盘', ...
-               'Position', [40 40 FIG_W 780], 'Color', BG);
+               'Position', [WIN_X WIN_Y WIN_W WIN_H], 'Color', BG);
+fprintf("屏幕 %d×%d → 仪表盘窗口 %d×%d（4 列，每列宽 %d）\n", ...
+        SCR_W, SCR_H, WIN_W, WIN_H, COL_W);
 
 % ---------- 标题 ----------
 uilabel(fig, 'Text', 'UNITY 数字孪生 · 实时驾驶仪表盘', ...
-        'Position', [24 728 660 38], 'FontSize', 20, 'FontWeight', 'bold');
-lblClock = uilabel(fig, 'Text', '等待连接…', 'Position', [FIG_W-400 728 376 38], ...
-        'FontSize', 15, 'HorizontalAlignment', 'right', 'FontColor', [0.38 0.42 0.48]);
+        'Position', [M+8 WIN_H-40 620 32], 'FontSize', 19, 'FontWeight', 'bold');
+lblClock = uilabel(fig, 'Text', '等待连接…', ...
+        'Position', [RIGHT_EDGE-380 WIN_H-36 380 28], ...
+        'FontSize', 14, 'HorizontalAlignment', 'right', 'FontColor', [0.38 0.42 0.48]);
 
-% ---------- 左列：车速表 ----------
+% ---------- 第 1 列：车速表 + 运行信息（上下切分）----------
 % 【R2025a 实测】uigauge 既没有 Title 也没有 Label 属性（只有 Limits / MajorTicks /
 %   MinorTicks / ScaleColors / ScaleColorLimits / FontSize / Value / Orientation），
 %   所以标题只能用外部的 uilabel 或 uipanel 的 Title 来做。
 %
 % 【布局思路】用 uipanel 把左列切成上下两块，标题嵌在边框上 ——
 %   比"外置 uilabel 摆在表上方"节省纵向空间，也不会跟表盘刻度贴在一起。
-%   左列总高：从 y=176 到 y=712（536px），让出顶部标题栏和底部控制台。
-pnlSpeed = uipanel(fig, 'Title', '车速', 'Position', [16 300 356 412], ...
-                   'FontSize', 13, 'FontWeight', 'bold', ...
+%
+% 【★ 关键：表盘高度优先】速度表是这张图上最显眼的元素。
+%   ★ 这里踩过两个坑（截图里都看得见）：
+%     ① 表盘被面板底边切掉 —— 因为 "表盘顶 + 表盘高" 超过了面板高度，
+%        而且 y 起点写死 40，没考虑面板真实高度。
+%     ② 大号数字 32.0 和单位 km/h 叠在一起 —— 两个 label 的 y 都写死
+%        （104 和 84），在 36 号字下高度不够，直接压上去了。
+%   正确做法：① 表盘和文字都用**面板实际高度**反推位置
+%             ② 单位标签紧贴数字下方，不写死
+INFO_H    = 118;                        % 运行信息面板固定高（5 行字的最小舒适值）
+SPD_H     = BODY_H - INFO_H - GAP;      % 车速面板吃掉剩下的全部高度
+SPD_H     = max(SPD_H, 300);            % 兜底：屏幕极矮时也保证表盘能看
+SPD_Y     = BODY_Y + INFO_H + GAP;
+INFO_Y    = BODY_Y;
+
+pnlSpeed = uipanel(fig, 'Title', '车速', ...
+                   'Position', [COL_X(1) SPD_Y COL_W SPD_H], ...
+                   'FontSize', 12.5, 'FontWeight', 'bold', ...
                    'BackgroundColor', [1 1 1]);
 
+% 表盘：正方形才能保证"半圆"不被拉扁 —— 取宽和高里较小的那个当边长。
+% ★ uigauge 的 semicircular 会**自带上下留白**（刻度数字要占地方），
+%   所以这块 Position 的矩形比看上去的"半圆"要大一些。
+%
+% ★★ 这里又踩了一个坑（截图里 "32.0 / km/h" 被挤到面板外面）：
+%   uigauge 的**绘制区**是它 Position 矩形**加上四周的刻度标签**，
+%   也就是说实际占用高度 ≈ Position 高度 × 1.15 左右。
+%   原来算 gaugeSide 时只扣了 70，导致表盘画出来比预期高，
+%   把下面的数字块顶出了面板边界。
+%   → 文字块固定从面板底部往上排（不依赖表盘算出来的位置），
+%     表盘高度则用"面板高 − 文字块 − 余量"再乘 0.80 保守估。
+TXT_BLK   = 74;                              % 数字(46) + 单位(20) + 缝，从底部起算
+gaugeMaxH = SPD_H - 26 - TXT_BLK - 14;       % 表盘可用的最大高度
+gaugeSide = min(COL_W - 16, round(gaugeMaxH / 0.92));
+gaugeSide = max(gaugeSide, 150);
+gaugeH    = round(gaugeSide * 0.92);
+gaugeY    = SPD_H - 26 - gaugeH;             % ★ 从面板顶往下贴：顶边留 26 给标题栏
+gaugeY    = max(gaugeY, TXT_BLK + 4);        % 但不许压到文字块
+
 gSpeed = uigauge(pnlSpeed, 'semicircular');
-gSpeed.Position = [8 46 340 330];
+gSpeed.Position = [round((COL_W - gaugeSide)/2), gaugeY, gaugeSide, gaugeH];
 gSpeed.Limits = [0 60];
 gSpeed.MajorTicks = 0:10:60;
 gSpeed.MinorTicks = 0:5:60;
 gSpeed.ScaleColors = [0.22 0.65 0.36; 0.95 0.76 0.20; 0.90 0.28 0.22];
 gSpeed.ScaleColorLimits = [0 35; 35 50; 50 60];
-gSpeed.FontSize = 11;
+gSpeed.FontSize = 10.5;
 
-% 大号数字摆在表盘中心偏下（表盘是半圆，中间是空的，正好塞进去）
-lblSpeed = uilabel(pnlSpeed, 'Text', '0.0', 'Position', [8 118 340 62], ...
-        'FontSize', 40, 'FontWeight', 'bold', 'HorizontalAlignment', 'center');
-uilabel(pnlSpeed, 'Text', 'km/h', 'Position', [8 96 340 22], 'FontSize', 12, ...
-        'HorizontalAlignment', 'center', 'FontColor', [0.45 0.48 0.53]);
+% 大号数字 + 单位：★ 从面板**底部**往上排，位置和表盘无关，保证一定在框内。
+%   数字框 46 高（32 号字够），单位框 20 高，紧贴其上。
+% ★ FontColor 要**显式写**：不写的话在某些系统主题下会继承成浅灰，
+%   白底上就变成"看不清"（截图里 32.0 是灰的就是这个原因）。
+lblSpeed = uilabel(pnlSpeed, 'Text', '0.0', ...
+        'Position', [8 26 COL_W-16 46], ...
+        'FontSize', 32, 'FontWeight', 'bold', 'HorizontalAlignment', 'center', ...
+        'VerticalAlignment', 'bottom', 'FontColor', [0.12 0.14 0.18]);
+uilabel(pnlSpeed, 'Text', 'km/h', 'Position', [8 8 COL_W-16 20], ...
+        'FontSize', 11.5, 'HorizontalAlignment', 'center', ...
+        'FontColor', [0.45 0.48 0.53]);
 
-% ---------- 左列下半：运行信息 ----------
-pnlInfo = uipanel(fig, 'Title', '运行信息', 'Position', [16 172 356 120], ...
-                  'FontSize', 13, 'FontWeight', 'bold', ...
+% ---------- 第 1 列下半：运行信息 ----------
+pnlInfo = uipanel(fig, 'Title', '运行信息', ...
+                  'Position', [COL_X(1) INFO_Y COL_W INFO_H], ...
+                  'FontSize', 12.5, 'FontWeight', 'bold', ...
                   'BackgroundColor', [1 1 1]);
 
-% 两列排布：左边 3 行，右边 3 行，每行 28px 高、间隔 2px
-lblMile  = uilabel(pnlInfo, 'Text', '里程   0.0 m',  'Position', [14 74 160 26], 'FontSize', 13);
-lblLap   = uilabel(pnlInfo, 'Text', '圈数   0',      'Position', [186 74 156 26], 'FontSize', 13);
-lblWp    = uilabel(pnlInfo, 'Text', '目标点   WP-',  'Position', [14 44 160 26], 'FontSize', 13);
-lblPos   = uilabel(pnlInfo, 'Text', '位置   (-,-)',  'Position', [186 44 156 26], 'FontSize', 13);
-lblState = uilabel(pnlInfo, 'Text', '状态机   --',   'Position', [14 14 328 26], 'FontSize', 13);
+% ★ 两列排列的坑：原来写了 [14 74 160 26] / [186 74 156 26]，
+%   两个标签宽度加起来 316 + 起止间隔，COL_W 一缩就**右边那列压到左列身上**。
+%   现在用 COL_W 算：一半减缝，并留出左侧缩进。
+infoPadX = 12;
+infoColW = floor((COL_W - 2*infoPadX - 6) / 2);
+infoR    = infoPadX + infoColW + 6;     % 右列的 x
+lblMile  = uilabel(pnlInfo, 'Text', '里程  0.0 m', ...
+        'Position', [infoPadX 74 infoColW 24], 'FontSize', 12);
+lblLap   = uilabel(pnlInfo, 'Text', '圈数  0', ...
+        'Position', [infoR 74 infoColW 24], 'FontSize', 12);
+lblWp    = uilabel(pnlInfo, 'Text', '目标点  WP-', ...
+        'Position', [infoPadX 46 infoColW 24], 'FontSize', 12);
+lblPos   = uilabel(pnlInfo, 'Text', '位置  (-,-)', ...
+        'Position', [infoR 46 infoColW 24], 'FontSize', 12);
+lblState = uilabel(pnlInfo, 'Text', '状态机  --', ...
+        'Position', [infoPadX 16 COL_W-2*infoPadX 24], 'FontSize', 12);
 
-% ---------- 中列：油门 / 刹车 / 转向 ----------
-% 同样用 uipanel 分组：标题嵌在边框上，表盘放在面板内。
-% 中列 x 从 388 到 768（宽 380）。
-pnlThr = uipanel(fig, 'Title', '油门开度 (%)', 'Position', [388 578 380 96], ...
-                 'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+% ---------- 第 2 列：油门 / 刹车 / 转向 / 指示灯 ----------
+% 【★ 刻度标签被切掉的原因】原来面板写死 96 高、表盘区 [14 12 352 60]，
+%   留给刻度标签的纵向空间只有几像素 —— "左满/右满"这种长标签直接被裁掉。
+%   另外面板宽 380 时 352 宽的表盘够用；窄屏时 340 宽的表盘上挤 5 个标签也会重叠。
+%   现在：① 表盘宽度跟着 COL_W 走 ② 表盘高度固定 62 保证标签有地方放
+%        ③ 面板高度由表盘高度 + 标题栏 + 底部余量推出来，不写死。
+GAUGE_H  = 62;                          % 线性表盘高度（要容纳下刻度数字和标题）
+GAUGE_Y  = 14;                          % 表盘在面板内的 y
+CARD_H   = GAUGE_H + GAUGE_Y + 22;      % 单张卡片的总高
+GAUGE_W  = COL_W - 2*14;                % 表盘宽（面板左右各留 14）
+
+% 纵向排布：3 张卡片 + 指示灯，从上往下顺次摆，缝是 GAP
+LAMP_H   = BODY_H - 3*(CARD_H + GAP) - 52;   % 指示灯卡片吃剩下的（还要扣下面那条提示）
+LAMP_H   = max(LAMP_H, 108);
+card3Y   = BODY_Y + LAMP_H + GAP;            % 第三张卡片（转向）的底
+card2Y   = card3Y + CARD_H + GAP;
+card1Y   = card2Y + CARD_H + GAP;            % 第一张卡片（油门）的底
+
+pnlThr = uipanel(fig, 'Title', '油门开度 (%)', ...
+                 'Position', [COL_X(2) card1Y COL_W CARD_H], ...
+                 'FontSize', 12.5, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
 gThr = uigauge(pnlThr, 'linear');
-gThr.Position = [14 12 352 60];
+gThr.Position = [14 GAUGE_Y GAUGE_W GAUGE_H];
 gThr.Limits = [0 100];
 gThr.MajorTicks = 0:25:100;
 gThr.MajorTickLabels = {'0','25','50','75','100'};
@@ -216,10 +337,11 @@ gThr.Orientation = 'horizontal';
 gThr.ScaleColors = [0.25 0.60 0.90];
 gThr.ScaleColorLimits = [0 100];
 
-pnlBrk = uipanel(fig, 'Title', '刹车 (%)', 'Position', [388 476 380 96], ...
-                 'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+pnlBrk = uipanel(fig, 'Title', '刹车 (%)', ...
+                 'Position', [COL_X(2) card2Y COL_W CARD_H], ...
+                 'FontSize', 12.5, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
 gBrk = uigauge(pnlBrk, 'linear');
-gBrk.Position = [14 12 352 60];
+gBrk.Position = [14 GAUGE_Y GAUGE_W GAUGE_H];
 gBrk.Limits = [0 100];
 gBrk.MajorTicks = 0:50:100;
 gBrk.MajorTickLabels = {'0','50','100'};
@@ -227,49 +349,64 @@ gBrk.Orientation = 'horizontal';
 gBrk.ScaleColors = [0.90 0.30 0.25];
 gBrk.ScaleColorLimits = [0 100];
 
-pnlStr = uipanel(fig, 'Title', '转向 (%)    负 = 左    正 = 右', ...
-                 'Position', [388 374 380 96], ...
-                 'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+% ★ 转向的刻度标签原来写 {'左满','-50','0','50','右满'}。
+%   窄屏下表盘只有 ~300px，5 个标签里"左满/右满"是两字，必然和旁边的数字撞上。
+%   改短标签：左死点 / 右死点用符号代替，数字照旧。
+pnlStr = uipanel(fig, 'Title', '转向 (%)   负 = 左   正 = 右', ...
+                 'Position', [COL_X(2) card3Y COL_W CARD_H], ...
+                 'FontSize', 12.5, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
 gStr = uigauge(pnlStr, 'linear');
-gStr.Position = [14 12 352 60];
+gStr.Position = [14 GAUGE_Y GAUGE_W GAUGE_H];
 gStr.Limits = [-100 100];
 gStr.MajorTicks = -100:50:100;
-gStr.MajorTickLabels = {'左满','-50','0','50','右满'};
+gStr.MajorTickLabels = {'','-50','0','50',''};   % ★ 端点留空：面板标题已写明"负=左 正=右"
 gStr.Orientation = 'horizontal';
 gStr.ScaleColors = [0.38 0.45 0.85];
 gStr.ScaleColorLimits = [-100 100];
 
-% ---------- 中列：指示灯（独立面板，四盏灯两行两列）----------
+% ---------- 第 2 列底：指示灯（四盏灯两行两列）----------
 GREY = [0.62 0.65 0.69];
 
-pnlLamp = uipanel(fig, 'Title', '状态指示灯', 'Position', [388 240 380 128], ...
-                  'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+pnlLamp = uipanel(fig, 'Title', '状态指示灯', ...
+                  'Position', [COL_X(2) BODY_Y COL_W LAMP_H], ...
+                  'FontSize', 12.5, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
 
-lampConn = uilamp(pnlLamp, 'Position', [22 68 24 24]);  lampConn.Color = GREY;
-lblConn  = uilabel(pnlLamp, 'Text', '未连接', 'Position', [56 66 130 26], 'FontSize', 12.5);
+% ★ 灯的排布也改成按面板宽算：左半 / 右半，不再写死 210。
+%   原来写死 [22 ...] 和 [210 ...]，面板一窄，"前方有障碍"那行字就被右边界切掉。
+lampW1 = floor((COL_W - 3*14) / 2);     % 左右两半的宽度
+lampX2 = 14 + lampW1 + 14;
+lampY1 = max(60, LAMP_H - 54);          % 上排
+lampY2 = max(14, LAMP_H - 92);          % 下排
 
-lampCtrl = uilamp(pnlLamp, 'Position', [22 28 24 24]);  lampCtrl.Color = GREY;
-lblCtrl  = uilabel(pnlLamp, 'Text', '本地控制', 'Position', [56 26 130 26], 'FontSize', 12.5);
+lampConn = uilamp(pnlLamp, 'Position', [14 lampY1 20 20]);  lampConn.Color = GREY;
+lblConn  = uilabel(pnlLamp, 'Text', '未连接', 'Position', [40 lampY1-3 lampW1-26 24], 'FontSize', 12);
+lampCtrl = uilamp(pnlLamp, 'Position', [14 lampY2 20 20]);  lampCtrl.Color = GREY;
+lblCtrl  = uilabel(pnlLamp, 'Text', '本地控制', 'Position', [40 lampY2-3 lampW1-26 24], 'FontSize', 12);
 
-lampBrk  = uilamp(pnlLamp, 'Position', [210 68 24 24]); lampBrk.Color = GREY;
-lblBrk   = uilabel(pnlLamp, 'Text', '刹车中', 'Position', [244 66 120 26], 'FontSize', 12.5);
+lampBrk  = uilamp(pnlLamp, 'Position', [lampX2 lampY1 20 20]); lampBrk.Color = GREY;
+lblBrk   = uilabel(pnlLamp, 'Text', '刹车中', 'Position', [lampX2+26 lampY1-3 lampW1-26 24], 'FontSize', 12);
+lampObs  = uilamp(pnlLamp, 'Position', [lampX2 lampY2 20 20]); lampObs.Color = GREY;
+lblObs   = uilabel(pnlLamp, 'Text', '前方障碍', 'Position', [lampX2+26 lampY2-3 lampW1-26 24], 'FontSize', 12);
 
-lampObs  = uilamp(pnlLamp, 'Position', [210 28 24 24]); lampObs.Color = GREY;
-lblObs   = uilabel(pnlLamp, 'Text', '前方有障碍', 'Position', [244 26 120 26], 'FontSize', 12.5);
-
-% ---------- 中列底部：谁在开车（大字提示条）----------
+% ---------- 第 2 列最底：谁在开车（大字提示条）----------
 lblCtrlBig = uilabel(fig, 'Text', '等待 Unity 数据…', ...
-        'Position', [388 176 380 56], 'FontSize', 15, 'FontWeight', 'bold', ...
+        'Position', [COL_X(2) BODY_Y-46 COL_W 42], 'FontSize', 13, 'FontWeight', 'bold', ...
+        'WordWrap', 'on', ...
         'HorizontalAlignment', 'center', 'VerticalAlignment', 'center', ...
         'BackgroundColor', [1 1 1], 'FontColor', [0.35 0.38 0.44]);
 
-% ---------- 右列：实时曲线 ----------
-% 右列 x 从 784 到 1164（宽 380）。
-% 曲线占上半，明细占下半，两块高度加起来 = 顶栏到控制台之间的距离。
-pnlChart = uipanel(fig, 'Title', '速度对比 (m/s)', 'Position', [784 464 380 248], ...
-                   'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+% ---------- 第 3 列：实时曲线 + 数据明细 ----------
+% 曲线占上面约 55%，明细占下面 —— 都用 BODY_H 推，不写死。
+CHART_H  = round((BODY_H - GAP) * 0.55);
+DETAIL_H = BODY_H - GAP - CHART_H;
+CHART_Y  = BODY_Y + DETAIL_H + GAP;
+DETAIL_Y = BODY_Y;
 
-ax = uiaxes(pnlChart, 'Position', [12 10 356 200]);
+pnlChart = uipanel(fig, 'Title', '速度对比 (m/s)', ...
+                   'Position', [COL_X(3) CHART_Y COL_W CHART_H], ...
+                   'FontSize', 12.5, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+
+ax = uiaxes(pnlChart, 'Position', [10 8 COL_W-20 CHART_H-52]);
 ax.XLabel.String = '时间 (s)';
 ax.YLabel.String = '速度';
 grid(ax, 'on'); hold(ax, 'on');
@@ -278,75 +415,118 @@ hV    = animatedline(ax, 'Color', [0.16 0.42 0.86], 'LineWidth', 1.6);
 hVdes = animatedline(ax, 'Color', [0.92 0.36 0.16], 'LineStyle', '--', 'LineWidth', 1.3);
 hVmod = animatedline(ax, 'Color', [0.20 0.62 0.30], 'LineStyle', '-.', 'LineWidth', 1.3);
 % 图例挪到东北角：原来放西北角会压住曲线起点的上升段
-legend(ax, {'实体速度','MATLAB 期望','孪生模型'}, 'Location', 'northeast', 'FontSize', 9);
+legend(ax, {'实体速度','MATLAB 期望','孪生模型'}, 'Location', 'northeast', 'FontSize', 8.5);
 
-% ---------- 右列：数据明细 ----------
-pnlDetail = uipanel(fig, 'Title', '数据明细', 'Position', [784 240 380 216], ...
-                    'FontSize', 13, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
+% ---------- 第 3 列：数据明细 ----------
+pnlDetail = uipanel(fig, 'Title', '数据明细', ...
+                    'Position', [COL_X(3) DETAIL_Y COL_W DETAIL_H], ...
+                    'FontSize', 12.5, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1]);
 lblMsg = uilabel(pnlDetail, 'Text', {'等待 Unity 数据…'}, ...
-        'Position', [12 10 356 178], 'FontSize', 12, ...
+        'Position', [12 8 COL_W-24 max(DETAIL_H-44, 60)], 'FontSize', 11.5, ...
         'VerticalAlignment', 'top', 'WordWrap', 'on', 'FontColor', [0.22 0.25 0.31]);
 
-% ---------- 第四列：车载摄像头（实时路况 + 偏离告警）----------
-% 这一列是新加的，所以窗口宽度也跟着加宽了（见上面 FIG_W）。
-% 面板高度占满右列：从 y=240 到 y=712。
+% ---------- 第 4 列：车载摄像头（实时路况 + 偏离告警）----------
+% ★ 面板高度给足 BODY_H。原来 472 高，扣掉 96 的"标题+状态+提示"后
+%   画面区只剩 376；又因为窗口被压缩，画面被拉成很扁的一条。
 camPanel = [];
 if ENABLE_VIDEO
-    camPanel = CameraPanel(fig, [1180 240 380 472]);
+    camPanel = CameraPanel(fig, [COL_X(4) BODY_Y COL_W BODY_H]);
     camPanel.setLimits(DEV_DIST_LIMIT, DEV_ANG_LIMIT);
 end
 
 % ---------- 底部：控制台 ----------
-% ★ 宽度要跟着窗口走：原来是写死的 1148（窗口 1180 减左右边距 32），
-%   窗口加宽后如果不改，控制台右边会空出一大块。
-%   干脆用 FIG_W 算，以后改窗口宽度就不用再回来动这里。
-pnl = uipanel(fig, 'Title', '控制台', 'Position', [16 16 FIG_W-32 148], 'FontSize', 13);
+% ★ 宽度按 FIG_W 算，不再写死。屏幕窄的时候整条也跟着窄。
+pnl = uipanel(fig, 'Title', '控制台', ...
+              'Position', [M M FIG_W-2*M CTRL_H], 'FontSize', 12.5);
+
+% ★ 控制台内部也是 5 组横向排布，原来全部写死 x = 18 / 232 / 620 / 740，
+%   面板一窄就从第 4 组开始撞出右边界（截图里"通信统计"被切掉就是这个原因）。
+%   现在把 5 组按"权重"分配到面板宽度里：
+%     组1 运行模式(下拉)  组2 目标速度(滑块)  组3 手动转向(滑块)
+%     组4 两个开关         组5 通信统计
+%   权重按各组需要的最小宽度给。
+%   ★★ 组 4 是两个开关，踩的坑是**原来上下叠放** ——
+%      控制台内部高度只有 152，要塞下「标签+开关+标签+开关」四行，
+%      每行平均只有 38px，而 uiswitch 本身就要 24~28px，
+%      于是"急停"的标签直接压到上面那个开关身上（截图里能看到）。
+%      → 改成**左右并排**：两个开关各占半宽，标签在上面、开关在下面，
+%        纵向只需要"标签 + 开关"两行，彻底不挤。
+%      → 代价是组 4 要更宽（两个 slider 式子开关 ≈ 2×76 + 间距），
+%        所以权重从 1.0 提到 2.1。
+CTRL_W = FIG_W - 2*M - 24;              % 面板内可用宽（再扣左右各 12 内边距）
+wSum   = 1.15 + 1.85 + 1.85 + 2.10 + 2.05;
+uW     = CTRL_W / wSum;
+w1 = floor(1.15*uW); w2 = floor(1.85*uW);
+w3 = floor(1.85*uW); w4 = floor(2.10*uW);
+x1 = 12;
+x2 = x1 + w1 + 10;
+x3 = x2 + w2 + 10;
+x4 = x3 + w3 + 10;
+x5 = x4 + w4 + 10;
 
 % 第 1 组：运行模式
-uilabel(pnl, 'Text', '运行模式', 'Position', [18 106 120 22], 'FontSize', 12, ...
+uilabel(pnl, 'Text', '运行模式', 'Position', [x1 CTRL_H-42 w1 20], 'FontSize', 11.5, ...
         'FontWeight', 'bold');
 ddMode = uidropdown(pnl, 'Items', {'MATLAB 自动','MATLAB 手动','Unity 本地'}, ...
-        'Value', 'MATLAB 自动', 'Position', [18 68 190 30]);
+        'Value', 'MATLAB 自动', 'Position', [x1 CTRL_H-80 w1 28]);
 
 % 第 2 组：目标速度滑块
-uilabel(pnl, 'Text', '目标速度 (m/s)', 'Position', [232 106 200 22], 'FontSize', 12, ...
+uilabel(pnl, 'Text', '目标速度 (m/s)', 'Position', [x2 CTRL_H-42 w2 20], 'FontSize', 11.5, ...
         'FontWeight', 'bold');
 sldV = uislider(pnl, 'Limits', [0 8], 'Value', V_MAX, 'MajorTicks', 0:2:8, ...
-        'Position', [232 84 280 3]);
-lblV = uilabel(pnl, 'Text', sprintf('%.1f', V_MAX), 'Position', [524 74 60 28], ...
-        'FontSize', 15, 'FontWeight', 'bold');
+        'Position', [x2 CTRL_H-64 w2-56 3]);
+lblV = uilabel(pnl, 'Text', sprintf('%.1f', V_MAX), ...
+        'Position', [x2+w2-50 CTRL_H-76 50 26], ...
+        'FontSize', 14, 'FontWeight', 'bold');
 
 % 第 3 组：手动转向滑块
-uilabel(pnl, 'Text', '手动转向（负 = 左，正 = 右）', 'Position', [232 46 280 22], 'FontSize', 12, ...
-        'FontWeight', 'bold');
+uilabel(pnl, 'Text', '手动转向（负 = 左，正 = 右）', ...
+        'Position', [x3 64 w3 20], 'FontSize', 11.5, 'FontWeight', 'bold');
 sldS = uislider(pnl, 'Limits', [-1 1], 'Value', 0, 'MajorTicks', -1:0.5:1, ...
-        'Position', [232 24 280 3]);
-lblS = uilabel(pnl, 'Text', '0.00', 'Position', [524 14 60 28], ...
-        'FontSize', 15, 'FontWeight', 'bold');
+        'Position', [x3 42 w3-56 3]);
+lblS = uilabel(pnl, 'Text', '0.00', 'Position', [x3+w3-50 30 50 26], ...
+        'FontSize', 14, 'FontWeight', 'bold');
 
-% 第 4 组：两个开关（分开摆，各自带标签，不再挤在一起）
+% 第 4 组：两个开关（★ 左右并排，不上下叠 —— 原因见上面权重那段的注释）
 % 【R2025a 实测】uiswitch 的 Value 不是 true/false，而是 Items 里的某个字符串。
 %   直接写 sw.Value = true 会报「'Value' 必须为 'Items' 中的某个元素」。
-uilabel(pnl, 'Text', '强制刹车', 'Position', [620 106 80 22], 'FontSize', 12, ...
+%
+% ★ 开关宽度：slider 样式要把"关""开"两个字分别画在左右两端，
+%   实测至少 76px 才不溢出；toggle 样式只需要 64px 左右。
+halfW = floor((w4 - 12) / 2);           % 并排两个，中间留 12 缝
+swW   = max(76, min(halfW, 96));
+
+uilabel(pnl, 'Text', '强制刹车', 'Position', [x4 CTRL_H-42 halfW 20], 'FontSize', 11.5, ...
         'FontWeight', 'bold');
-swBrk = uiswitch(pnl, 'slider', 'Position', [620 66 50 22]);
+swBrk = uiswitch(pnl, 'slider', 'Position', [x4 CTRL_H-80 swW 24]);
 swBrk.Items = {'关', '开'};
 swBrk.Value = '关';
 
-uilabel(pnl, 'Text', '急停', 'Position', [620 46 80 22], 'FontSize', 12, ...
+x4b = x4 + halfW + 12;                  % 第二个开关的 x（并排）
+% ★ 急停的标签比强制刹车再高一点点：toggle 样式的开关比 slider 高 4px，
+%   标签贴着的话视觉上会挨在一起（截图里"急停"和下面的椭圆开关几乎贴上）。
+uilabel(pnl, 'Text', '急停', 'Position', [x4b CTRL_H-40 halfW 20], 'FontSize', 11.5, ...
         'FontWeight', 'bold', 'FontColor', [0.85 0.25 0.18]);
-swStop = uiswitch(pnl, 'toggle', 'Position', [620 16 60 26]);
+swStop = uiswitch(pnl, 'toggle', 'Position', [x4b CTRL_H-82 min(64, halfW) 28]);
 swStop.Items = {'关', '开'};
 swStop.Value = '关';
 
 % 第 5 组：收发统计
-uilabel(pnl, 'Text', '通信统计', 'Position', [740 106 200 22], 'FontSize', 12, ...
+% ★ 这一组一直摆到面板右边界：x5 起点由前面 4 组挤出来后，
+%   剩余宽度是 (面板内宽 - x5)，不要再拿 CTRL_W 去减，否则右边会溢出。
+CTRL_INNER = FIG_W - 2*M - 24;          % 面板内可用宽
+g5W = CTRL_INNER + 12 - x5;             % +12 是把左侧那 12 内边距补回来
+g5W = max(g5W, 120);
+uilabel(pnl, 'Text', '通信统计', 'Position', [x5 CTRL_H-42 g5W 20], 'FontSize', 11.5, ...
         'FontWeight', 'bold');
-lblSend = uilabel(pnl, 'Text', '已下发 0 条指令', 'Position', [740 74 380 26], 'FontSize', 12.5);
-lblStat = uilabel(pnl, 'Text', '收包 0 条', 'Position', [740 44 380 26], ...
-        'FontSize', 12.5, 'FontColor', [0.45 0.48 0.53]);
-lblRate = uilabel(pnl, 'Text', '速率 --', 'Position', [740 14 380 26], ...
-        'FontSize', 12.5, 'FontColor', [0.45 0.48 0.53]);
+lblSend = uilabel(pnl, 'Text', '已下发 0 条指令', ...
+        'Position', [x5 CTRL_H-70 g5W 24], 'FontSize', 11.5);
+lblStat = uilabel(pnl, 'Text', '收包 0 条', ...
+        'Position', [x5 CTRL_H-98 g5W 24], ...
+        'FontSize', 11.5, 'FontColor', [0.45 0.48 0.53]);
+lblRate = uilabel(pnl, 'Text', '速率 --', ...
+        'Position', [x5 CTRL_H-126 g5W 24], ...
+        'FontSize', 11.5, 'FontColor', [0.45 0.48 0.53]);
 
 % 滑块实时显示数字
 sldV.ValueChangedFcn = @(s,e) set(lblV, 'Text', sprintf('%.1f', s.Value));
