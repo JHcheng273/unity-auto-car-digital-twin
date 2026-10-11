@@ -27,7 +27,8 @@ public class HudDisplay : MonoBehaviour
     void Update()
     {
         if (label == null || drive == null || car == null) return;
-        if (drive.path == null) return;
+        // ★ 两条路任一条能走就显示 —— 走全局路网时 path 可能是空的
+        if (drive.path == null && drive.network == null) return;
 
         float speed = car.CurrentSpeed;      // 真实车速，不是 Motor*maxSpeed
 
@@ -40,7 +41,7 @@ public class HudDisplay : MonoBehaviour
         label.text =
             $"状态     {drive.CurrentState}\n" +
             $"控制     {ControlSource()}\n" +
-            $"目标点   WP{drive.CurrentWaypointIndex} / 共 {drive.path.Count} 个\n" +
+            $"目标点   {drive.RouteText}\n" +
             $"圈数     {drive.LapCount} / {drive.totalLaps}\n" +
             $"速度     {speed:F2} m/s  ({speed * 3.6f:F1} km/h)\n" +
             $"油门     {car.Motor:F2}      转向 {car.Steering:F2}\n" +

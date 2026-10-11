@@ -9,11 +9,10 @@ using UnityEngine;
 ///   这个脚本**不去改 AutoDrive**（那是已定稿的代码，改了风险大），
 ///   而是在它后面插一层：AutoDrive 每帧算完输入后，本脚本再决定要不要覆盖。
 ///
-///   执行顺序用「脚本执行顺序」保证：本脚本必须晚于 AutoDrive 执行。
-///   在 Inspector 里点组件右上角 ⋮ → 执行顺序（Execution Order），
-///   把本脚本拖到 AutoDrive 后面。或者游戏一运行本脚本会自动检查并警告。
+///   执行顺序用 `LateUpdate` 保证：LateUpdate 天然晚于所有 Update，
+///   所以不用去配 Execution Order 也不会打架。
 ///
-/// 【四个状态】
+/// 【五个状态】
 ///   Normal    —— 什么都不做，AutoDrive 自己开
 ///   Braking   —— 前方太近，刹死。同时开始算绕行路径
 ///   Detouring —— 沿着 A* 算出来的路径开，绕开障碍物
@@ -23,16 +22,29 @@ using UnityEngine;
 ///   撞上之前必须先停下。一边算路径一边往前冲，算得慢一点就撞了。
 ///   所以 Braking 状态先把车刹稳，路径在同一帧就算好（A* 只要几毫秒），
 ///   停稳后立刻切 Detouring —— 视觉上就是"猛地一停，然后绕过去"。
+///
+/// 【★ 2026-10-11 修了「加障碍物后穿模」】
+///   两个原因叠加：
+///     ① 检测只有一条射线，覆盖 ±0.8 米，而车体实际会撞上的范围是 ±1.6 米
+///        → 障碍物偏一点就看不见（详见 MyFrontDetector.cs 的注释）
+///     ② 本脚本只在 Detouring 状态检查"障碍物有没有变"，
+///        Normal 状态下你按 O 键加障碍物，它**要等射线打到才反应**
+///     修法：
+///     · 检测升级成 5 射线扇形（MyFrontDetector）
+///     · 障碍物变动统一在 LateUpdate **最开头**处理，覆盖全部状态
+///       → 见 OnObstaclesChanged()，加完障碍物下一帧就有反应
+///     · IsBlockingPath 改用检测器给的横向偏移，不再靠猜
 /// </summary>
 public class AvoidanceDriver : MonoBehaviour
 {
     public enum AvoidState { Normal, Braking, Detouring, Recovering }
 
     [Header("触发")]
-    [Tooltip("小于这个距离 → 急停（米）")]
-    public float emergencyDistance = 4.0f;
+    [Tooltip("小于这个距离 → 急停（米）。★ 要比 ObstacleManager 的 minSafetyDistance 小，" +
+             "否则障碍物一生成就已经在急停圈里了")]
+    public float emergencyDistance = 4.5f;
     [Tooltip("小于这个距离 → 提前开始规划绕行（米）")]
-    public float prepareDistance = 9.0f;
+    public float prepareDistance = 9f;
     [Tooltip("障碍物横向要挡住多少才值得绕？挡不住的（在旁边）直接过")]
     [Range(0.2f, 2f)]
     public float lateralClearance = 1.2f;
@@ -129,6 +141,20 @@ public class AvoidanceDriver : MonoBehaviour
 
         _overrideThisFrame = false;
 
+        // ★★ 放在状态分发**之前** —— 这是"添加障碍物后立刻响应"的关键。
+        //   原来只在 Detouring 分支里查 obstacles.Dirty，后果是：
+        //     · 车在 Normal 状态开得好好的，你按 O 键加个障碍物 →
+        //       这一帧没人管 Dirty，要等到下一帧射线打到才反应；
+        //       而射线以前只有一条（±0.8 米），障碍物偏一点就打不到 →
+        //       **车完全无视，直接穿过去**。
+        //   现在：只要障碍物列表变了，先重新标栅格；如果新障碍物
+        //   已经挡在必经之路上、且距离够近，**立刻**进急停流程。
+        if (obstacles != null && obstacles.Dirty)
+        {
+            obstacles.ClearDirty();
+            OnObstaclesChanged();
+        }
+
         switch (State)
         {
             case AvoidState.Normal:     TickNormal();     break;
@@ -148,9 +174,61 @@ public class AvoidanceDriver : MonoBehaviour
             string extra = State == AvoidState.Detouring
                 ? $"  路径点 {_pathIndex}/{(_path == null ? 0 : _path.Count)}"
                 : "";
+            string lat = detector != null && detector.HitRayIndex >= 0
+                ? $"  横向{detector.LateralOffset:+0.0;-0.0;0.0}米"
+                : "";
             Debug.Log($"[AvoidanceDriver] 状态={State}  障碍距离=" +
-                      $"{(detector != null ? detector.ObstacleDistance.ToString("F1") : "无检测器")} 米{extra}");
+                      $"{(detector != null ? detector.ObstacleDistance.ToString("F1") : "无检测器")} 米{lat}{extra}");
         }
+    }
+
+    /// <summary>
+    /// ★ 障碍物列表刚变过 —— 立刻重新标栅格；如果正被堵着，马上重规划。
+    /// 这是把"过几秒才反应"变成"下一帧就反应"的关键函数。
+    /// </summary>
+    void OnObstaclesChanged()
+    {
+        // 栅格必须马上重铺，否则 A* 还是照旧地图算
+        RefreshGrid();
+
+        // 车正在绕行 → 旧路径作废，立刻重算（不然会撞上新加的障碍物）
+        if (State == AvoidState.Detouring)
+        {
+            if (logStats) Debug.Log("[AvoidanceDriver] 障碍物有变动 → 立刻重新规划绕行路径");
+            TryPlanDetour();
+            return;
+        }
+
+        // 车在正常行驶 / 回归路上 → 看一眼新障碍物是不是正好挡住去路
+        if (State == AvoidState.Normal || State == AvoidState.Recovering)
+        {
+            if (detector == null) return;
+
+            // ★ 判定用 IsBlocking(车半宽 + 一点余量)，
+            //   而不是要求"正对车头"—— 只要在车体宽度内会撞上就要处理。
+            bool blocking = detector.IsInCollisionWidth(0.8f, 0.8f);
+
+            if (blocking && detector.ObstacleDistance < prepareDistance)
+            {
+                if (logStats)
+                    Debug.Log($"[AvoidanceDriver] 新障碍物挡住去路" +
+                              $"（{detector.ObstacleDistance:F1} 米，" +
+                              $"横向 {detector.LateralOffset:+0.0;-0.0;0.0} 米）→ 立即处理");
+
+                if (detector.ObstacleDistance < emergencyDistance)
+                    EnterBraking();          // 太近，先刹住
+                else
+                    TryPlanDetour();         // 还来得及，先把绕行路径算好
+            }
+        }
+    }
+
+    /// <summary>把当前所有障碍物重新标到栅格上（每个规划周期都要铺一次）</summary>
+    void RefreshGrid()
+    {
+        if (_grid == null || obstacles == null) return;
+        _grid.ClearAll();
+        obstacles.StampOnto(_grid, obstaclePadding);
     }
 
     float _steerOut, _motorOut;
@@ -166,8 +244,12 @@ public class AvoidanceDriver : MonoBehaviour
 
         float d = detector.ObstacleDistance;
 
-        // 障碍物不在正前方路线上 → 不用管
-        if (!IsBlockingPath()) return;
+        // ★ 判定"挡不挡路"用两个条件取或：
+        //   ① IsBlockingPath()      —— 障碍物在车头中线附近（lateralClearance 以内）
+        //   ② IsBlockingBody()      —— 障碍物虽偏，但在车体宽度内（±1.6 米）会撞上
+        //   只用 ① 的话，障碍物横向偏 1.3 米（车会蹭到）时会被判成"不用管"直接开过去。
+        //   加上 ② 之后，只有真正在旁边的（偏移 > 1.6 米）才会放行。
+        if (!IsBlockingPath() && !IsBlockingBody()) return;
 
         if (d < emergencyDistance)
         {
@@ -299,14 +381,8 @@ public class AvoidanceDriver : MonoBehaviour
             }
         }
 
-        // 障碍物列表变了（用户又按了 O 键）→ 重新规划
-        if (obstacles != null && obstacles.Dirty)
-        {
-            obstacles.ClearDirty();
-            if (logStats) Debug.Log("[AvoidanceDriver] 障碍物有变动 → 重新规划");
-            TryPlanDetour();
-            return;
-        }
+        // （障碍物变动现在统一在 LateUpdate 开头处理 —— 那里更早、覆盖所有状态，
+        //   不会再走到这里才反应。原来这里的那段 Dirty 检查已经挪走了。）
 
         // ★ 目标航点变了（车已经跑到了下一个点）→ 旧路径作废，得重新算。
         //   不判这一条的话，车会一直沿着"通向上一个航点"的旧路径开，
@@ -374,8 +450,7 @@ public class AvoidanceDriver : MonoBehaviour
         Vector3 goal = drive.CurrentTargetPoint;
 
         // ---- 1. 重新铺障碍物 ----
-        _grid.ClearAll();
-        obstacles.StampOnto(_grid, obstaclePadding);
+        RefreshGrid();
 
         // ★ 这里**不要**无条件清除起点/终点周围的格子！
         //   踩过的坑：曾经写成"每次规划前把车周围 1.2 米清干净"，
@@ -408,8 +483,9 @@ public class AvoidanceDriver : MonoBehaviour
         {
             float len = 0f;
             for (int i = 1; i < path.Count; i++) len += Vector3.Distance(path[i - 1], path[i]);
+            // ★ 目标点可能是固定环线的路标点，也可能是全局路线的路口 —— 用 RouteText 两种都覆盖
             Debug.Log($"[AvoidanceDriver] A* 规划成功（第 {_replanCount} 次）：" +
-                      $"{path.Count} 个点，长 {len:F1} 米，到航点 WP{drive.CurrentWaypointIndex}");
+                      $"{path.Count} 个点，长 {len:F1} 米，目标 {drive.RouteText}");
         }
 
         return true;
@@ -419,19 +495,31 @@ public class AvoidanceDriver : MonoBehaviour
 
     /// <summary>
     /// 前方那个障碍物是不是真的"挡在路上"？
-    /// 用射线检测到的点，看它相对车头中线的横向偏移。
-    /// 障碍物在路边（偏得多）就不用绕，直接开过去。
+    ///
+    /// ★ 2026-10-11 改：现在直接用检测器的 LateralOffset（横向偏移），
+    ///   不再"沿车头方向前进 ObstacleDistance 米取个点再猜"。
+    ///   原因是旧办法有两个毛病：
+    ///     ① 它假设障碍物正好在车头中线上，而实际值来自单射线 —— 一旦
+    ///        障碍物偏一点（没被射线打到），这个函数永远返回 false；
+    ///     ② 新障碍物刚加进来时，射线那帧才建好，取点算出来的横偏会飘。
+    ///   多射线检测器能直接给出障碍物横向在哪，判断就准了。
     /// </summary>
     bool IsBlockingPath()
     {
         if (detector == null) return false;
-        if (detector.ObstacleName == "") return false;      // 射线什么都没打到
+        if (detector.HitRayIndex < 0) return false;         // 没有任何射线打到东西
 
-        // 沿着车头方向，在检测到的距离处取一个点，看它偏中线多远
-        Vector3 probe = transform.position + transform.forward * detector.ObstacleDistance;
-        Vector3 local = transform.InverseTransformPoint(probe);
+        return Mathf.Abs(detector.LateralOffset) < lateralClearance;
+    }
 
-        return Mathf.Abs(local.x) < lateralClearance;
+    /// <summary>
+    /// 障碍物是不是"在车体宽度内、会撞上"（比 IsBlockingPath 宽松）。
+    /// 用于新增障碍物时的快速判断 —— 偏一点但车会蹭到，也得处理。
+    /// </summary>
+    bool IsBlockingBody()
+    {
+        if (detector == null) return false;
+        return detector.IsInCollisionWidth(0.8f, 0.8f);
     }
 
     bool IsMatlabDriving()

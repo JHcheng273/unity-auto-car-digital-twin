@@ -7,15 +7,24 @@ using UnityEngine;
 /// 【怎么用】
 ///   把这个脚本挂在场景里任意一个空物体上（比如新建一个叫 "ObstacleManager" 的），
 ///   运行时：
-///     O 键        → 在车前方随机位置生成一个障碍物
+///     O 键        → 在车前方随机位置生成一个障碍物（可以挡在正前方）
 ///     Shift + O   → 生成一个"大家伙"（更宽，逼着车绕远）
 ///     鼠标左键    → 在鼠标点中的地面位置生成障碍物
 ///     鼠标右键    → 删掉离鼠标最近的那个障碍物
-///     1 / 2 / 3   → 清空 / 恢复 3 个 / 恢复 5 个障碍物
+///     1 / 2 / 3 / 4 / 5 → 清空 / 挡住正前方 / 摆3个 / 摆5个 / 摆成一条墙
 ///
 /// 【为什么障碍物要"登记"起来】
 ///   绕障算法需要知道场上有哪些障碍、各自多大，才能把它们标到栅格上。
 ///   所以这里用一个列表统一管理，生成时登记、删除时注销。
+///
+/// 【★ 2026-10-11 修了一个"穿模"的坑】
+///   原来生成时会强制把障碍物推到车头侧面 1.5 米以外（理由是不想贴脸）。
+///   但当时的车前向检测只有**一条**射线（覆盖 ±0.8 米），
+///   于是推出去的那些障碍物**正好落进检测盲区** ——
+///   按 O 键加的障碍物车根本看不见，直接开过去，看起来就是"穿模"。
+///   现在两头都修了：
+///     · 检测改成 5 射线扇形（覆盖 ±2.4 米）—— MyFrontDetector.cs
+///     · 生成不再强制推向侧面，改用"最小安全距离"防止贴脸
 /// </summary>
 public class ObstacleManager : MonoBehaviour
 {
@@ -25,6 +34,13 @@ public class ObstacleManager : MonoBehaviour
     public float spawnMaxAhead = 16f;
     [Tooltip("横向偏移范围（左右各多少米）")]
     public float spawnLateral = 3.5f;
+    [Tooltip("★ 允许障碍物挡在正前方（横向偏移可以很小）。" +
+             "关掉的话障碍物会被强制推到侧面 1.5 米外 —— " +
+             "那样正好落在检测盲区里，车看不见它就直接穿过去了")]
+    public bool allowBlockingFront = true;
+    [Tooltip("生成时至少离车这么远（米）。要大于 AvoidanceDriver 的急停距离，" +
+             "否则障碍物一出现就贴脸，刹都来不及")]
+    public float minSafetyDistance = 5.0f;
 
     [Header("障碍物尺寸")]
     public float boxWidth  = 1.6f;
@@ -77,7 +93,7 @@ public class ObstacleManager : MonoBehaviour
         if (logStats)
             Debug.Log($"[ObstacleManager] 就绪，初始摆好 {Obstacles.Count} 个障碍物。\n" +
                       "  O 键=随机加一个  Shift+O=加个大的  左键=点击处加  右键=删掉最近的\n" +
-                      "  1=清空  2=重摆3个  3=重摆5个");
+                      "  1=清空  2=挡住正前方(演示急停/绕障)  3=重摆3个  4=重摆5个  5=摆一堵墙");
     }
 
     void Update()
@@ -91,8 +107,10 @@ public class ObstacleManager : MonoBehaviour
 
         // ---- 键盘：清空 / 重置 ----
         if (Input.GetKeyDown(KeyCode.Alpha1)) ResetTo(0);
-        if (Input.GetKeyDown(KeyCode.Alpha2)) ResetTo(3);
-        if (Input.GetKeyDown(KeyCode.Alpha3)) ResetTo(5);
+        if (Input.GetKeyDown(KeyCode.Alpha2)) SpawnBlockingFront();
+        if (Input.GetKeyDown(KeyCode.Alpha3)) ResetTo(3);
+        if (Input.GetKeyDown(KeyCode.Alpha4)) ResetTo(5);
+        if (Input.GetKeyDown(KeyCode.Alpha5)) SpawnWall();
 
         // ---- 鼠标：点击放置 / 删除 ----
         if (Input.GetMouseButtonDown(0) && _cam != null)
@@ -124,14 +142,44 @@ public class ObstacleManager : MonoBehaviour
         float ahead  = Random.Range(spawnMinAhead, spawnMaxAhead);
         float side   = Random.Range(-spawnLateral, spawnLateral);
 
-        // ★ 别摆在车正前方 1.5 米内的死角：那样车一生成就贴脸，
-        //   急停都来不及，看起来像"穿模撞上去"
-        if (Mathf.Abs(side) < 1.5f) side = Mathf.Sign(side == 0f ? 1f : side) * 1.5f;
-
+        // ★★ 这里原来有一句"避开死角"的代码，是穿模的元凶之一：
+        //      if (Mathf.Abs(side) < 1.5f) side = ±1.5f;
+        //    本意是"别摆在车正前方贴脸"，但效果是**障碍物永远偏在侧面 1.5~3.5 米**，
+        //    而当时的单射线只能覆盖 ±0.8 米 —— 于是按 O 键加的障碍物
+        //    永远落在检测盲区，车完全看不见，直接穿过去。
+        //
+        //    正确做法：**允许挡住正前方**（那才是真正想演示的场景），
+        //    改成靠"距离下限"保证不贴脸 —— 见下面的 minSafetyDistance。
+        //    （检测侧已经升级成 5 射线 ±2.4 米，正前方的障碍物一定看得见）
         Vector3 pos = car.position + car.forward * ahead + car.right * side;
         pos.y = 0f;   // 贴地
 
+        pos = EnforceMinDistance(pos, big);
+
         return SpawnAt(pos, big);
+    }
+
+    /// <summary>
+    /// 把生成点推到离车至少 minSafetyDistance 米的地方。
+    /// 原因：障碍物要是直接出现在车鼻子底下，急停也来不及，看着就像穿模。
+    /// 只沿"车到该点"的方向往外推，不改变左右关系。
+    /// </summary>
+    Vector3 EnforceMinDistance(Vector3 pos, bool big)
+    {
+        if (car == null) return pos;
+
+        Vector3 toPos = new Vector3(pos.x - car.position.x, 0f, pos.z - car.position.z);
+        float   d     = toPos.magnitude;
+
+        // 大号障碍物体积大，再多留一点余量
+        float need = minSafetyDistance + (big ? 1.5f : 0f);
+
+        if (d >= need || d < 1e-4f) return pos;
+
+        Vector3 dir = toPos / d;
+        Vector3 np  = car.position + dir * need;
+        np.y = 0f;
+        return np;
     }
 
     /// <summary>在指定世界位置生成一个障碍物</summary>
@@ -182,6 +230,56 @@ public class ObstacleManager : MonoBehaviour
         ClearAll();
         for (int i = 0; i < count; i++) SpawnRandom();
         if (logStats) Debug.Log($"[ObstacleManager] 重摆完毕，共 {Obstacles.Count} 个");
+    }
+
+    /// <summary>
+    /// 直接在车正前方放一个障碍物（横向偏移≈0）。
+    /// ★ 这是演示"识别 + 急停 + 绕障"最好用的一个 ——
+    ///   因为障碍物结结实实挡在路线上，绕障一定会触发。
+    ///   （以前这句会被强制推到侧面 1.5 米，看不到效果）
+    /// </summary>
+    public GameObject SpawnBlockingFront(float ahead = 10f, bool big = false)
+    {
+        if (car == null) { Debug.LogError("[ObstacleManager] 找不到车！"); return null; }
+
+        Vector3 pos = car.position + car.forward * ahead;
+        pos.y = 0f;
+        pos = EnforceMinDistance(pos, big);
+
+        var go = SpawnAt(pos, big);
+        if (go != null && logStats)
+            Debug.Log("[ObstacleManager] 已在车正前方放了一个（演示急停 + 绕障用这个）");
+        return go;
+    }
+
+    /// <summary>
+    /// 在车正前方横向摆一排障碍物（留一个缺口）。
+    /// ★ 演示 A* 的另一个好场景：车不能直着穿过去，必须找缺口绕。
+    /// gap 是缺口的横向位置（-1 左 / 0 中 / +1 右）。
+    /// </summary>
+    public void SpawnWall(float ahead = 12f, int count = 5, int gapIndex = 2)
+    {
+        if (car == null) { Debug.LogError("[ObstacleManager] 找不到车！"); return; }
+
+        float spacing = 2.0f;
+        float mid     = (count - 1) * 0.5f;
+        int   made    = 0;
+
+        for (int i = 0; i < count; i++)
+        {
+            if (i == gapIndex) continue;                  // 留个缺口让车有路可走
+            if (Obstacles.Count >= maxCount) break;
+
+            float side = (i - mid) * spacing;
+            Vector3 pos = car.position + car.forward * ahead + car.right * side;
+            pos.y = 0f;
+            pos = EnforceMinDistance(pos, false);
+
+            if (SpawnAt(pos, false) != null) made++;
+        }
+
+        if (logStats)
+            Debug.Log($"[ObstacleManager] 摆了 {made} 个障碍组成一堵墙（在第 {gapIndex + 1} 个位置留了缺口）");
     }
 
     // ==================== 删除 ====================
