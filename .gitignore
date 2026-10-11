@@ -54,6 +54,7 @@ tools/*.log
 tools/_*.txt
 tools/*_output.png
 tools/dash_e2e_*.png
+tools/layout_check.png
 
 # ===== MATLAB 脚本改动的本地备份（.bak_ 开头）=====
 *.bak_*
