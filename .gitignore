@@ -71,3 +71,6 @@ tools/layout_math_check.m
 
 # ===== 布局对照截图（放 matlab/ 下给用户看，不进仓库）=====
 matlab/*.png
+
+# ===== 布局对照截图（放 matlab/ 下给用户看，不进仓库）=====
+matlab/*.png
