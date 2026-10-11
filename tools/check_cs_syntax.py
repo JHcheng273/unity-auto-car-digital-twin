@@ -19,6 +19,9 @@ FILES = [
     r"E:\My project\Assets\Scripts\Learn\MouseTargetSelector.cs",
     r"E:\My project\Assets\Scripts\Learn\AutoDrive.cs",
     r"E:\My project\Assets\Editor\RoadNetworkSetup.cs",
+    r"E:\My project\Assets\Scripts\Learn\CameraStreamer.cs",
+    r"E:\My project\Assets\Scripts\Learn\ProjectionBeam.cs",
+    r"E:\My project\Assets\Editor\ProjectionSetup.cs",
 ]
 
 
