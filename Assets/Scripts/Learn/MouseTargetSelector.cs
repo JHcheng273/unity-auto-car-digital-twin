@@ -2,24 +2,35 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// 鼠标点击指定目标路口 —— 让"路线随时变化"变成一次点击。
+/// 右键点击指定目标路口 —— 让"路线随时变化"变成一次点击。
 ///
 /// 【怎么用】
-///   运行中：鼠标左键点地面上任意位置 → 找离点击处**最近的路口**当新目标
+///   运行中：鼠标**右键**点地面上任意位置 → 找离点击处**最近的路口**当新目标
 ///           → 立刻让 RoadNetwork 用 A* 重算一条从车当前位置到该路口的最短路
 ///           → 车马上改道走新路线
-///   右键   → 取消目标，回到"沿默认环线跑"的模式
+///   中键 / 数字键 0 → 取消目标，回到"沿默认环线跑"的模式
+///   数字键 1~6 → 直接跳到几个常用目标路口（演示时按得快）
 ///
-///   数字键 1~5 → 直接跳到几个常用目标路口（演示时按得快）
+/// 【★★ 为什么从「左键」改成「右键」（2026-10-11 修）】
+///   原来左键**同时**绑了两件事：
+///     · ObstacleManager 用左键"在点击处加障碍物"
+///     · 本脚本用左键"选目标路口"
+///   结果用户左键一点 → **既加了障碍、又改了目标点**，
+///   车一边躲刚冒出来的障碍、一边被要求去新目标，看起来就是"矛盾了"。
+///   现在分工明确：
+///     · **左键 = 加障碍物**（ObstacleManager，不变）
+///     · **右键 = 设目标点**（本脚本）
+///     · 删障碍物从"右键"挪到 **Delete 键 / Ctrl+右键**
+///   这样每个键只干一件事，闭着眼也不会误操作。
 ///
 /// 【为什么是"点最近的路口"而不是"点哪去哪"】
 ///   车必须走在路上。你点的地方如果在草坪中央，车没有路过去。
 ///   所以把点击位置吸附到最近的路口 —— 你点哪片区域，就去那个路口。
-///   看画面上的蓝圈就知道吸附到哪了。
+///   看画面上的绿圈就知道吸附到哪了。
 ///
 /// 【它怎么通知车改道】
 ///   它只做一件事：调用 network 找到新路线，然后 set 到 AutoDrive 上。
-///   不直接控制车 —— 控制权始终在 AutoDrive，这里只是"换一张地图/换一个目的地"。
+///   不直接控制车 —— 控制权始终在 AutoDrive，这里只是"换一个目的地"。
 /// </summary>
 public class MouseTargetSelector : MonoBehaviour
 {
@@ -31,6 +42,9 @@ public class MouseTargetSelector : MonoBehaviour
     public AutoDrive drive;
 
     [Header("交互")]
+    [Tooltip("★ 设目标用哪个鼠标键。默认右键（因为左键被「加障碍物」占了）")]
+    public MouseButton targetButton = MouseButton.Right;
+
     [Tooltip("点地面时，离得最近的路口超过这个距离就不认（防止点到很远的地方）")]
     public float maxSnapDistance = 14f;
 
@@ -44,6 +58,9 @@ public class MouseTargetSelector : MonoBehaviour
     [Header("调试")]
     public bool logStats = true;
     public bool drawRoute = true;
+
+    /// <summary>用哪个鼠标键设目标</summary>
+    public enum MouseButton { Right = 1, Middle = 2 }
 
     // ==================== 对外可见 ====================
     /// <summary>当前目标路口下标。-1 = 没有目标（沿环线跑）</summary>
@@ -74,10 +91,13 @@ public class MouseTargetSelector : MonoBehaviour
 
         if (logStats)
         {
+            string btn = targetButton == MouseButton.Right ? "右键" : "中键";
             Debug.Log($"[MouseTargetSelector] 就绪。路网 {network.JunctionCount} 个路口。\n" +
-                      "  鼠标左键 = 点哪去哪（吸附到最近路口）\n" +
-                      "  鼠标右键 = 取消目标，回到默认环线\n" +
-                      "  数字键 1~6 = 直接去预设路口");
+                      $"  ★ 鼠标{btn} = 点哪去哪（吸附到最近路口）\n" +
+                      "  ★ 鼠标左键 = 加障碍物（归 ObstacleManager 管）\n" +
+                      "  ★ Delete 键 / Ctrl+右键 = 删掉离鼠标最近的障碍物\n" +
+                      "  ★ 数字键 0 = 取消目标，回到默认环线\n" +
+                      "  ★ 数字键 1~6 = 直接去预设路口");
         }
     }
 
@@ -85,10 +105,14 @@ public class MouseTargetSelector : MonoBehaviour
     {
         if (network == null) return;
 
-        // ---- 左键：选目标 ----
-        if (Input.GetMouseButtonDown(0) && _cam != null)
+        // ---- 设目标键：选目标 ----
+        // ★ 用 GetMouseButtonDown((int)targetButton)：1=右键 2=中键
+        if (Input.GetMouseButtonDown((int)targetButton) && _cam != null)
         {
-            if (RayToGround(Input.mousePosition, out Vector3 hit))
+            // Ctrl + 右键 = 删障碍（让 MouseTargetSelector 把事件让给 ObstacleManager，
+            // 自己不作响应）—— 否则 Ctrl+右键会"又删障碍又设目标"
+            bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            if (!ctrl && RayToGround(Input.mousePosition, out Vector3 hit))
             {
                 _clickPoint = hit;
                 _hasClick = true;
@@ -96,8 +120,8 @@ public class MouseTargetSelector : MonoBehaviour
             }
         }
 
-        // ---- 右键：取消 ----
-        if (Input.GetMouseButtonDown(1))
+        // ---- 数字键 0：取消 ----
+        if (Input.GetKeyDown(KeyCode.Alpha0))
         {
             if (HasTarget) ClearTarget();
         }
@@ -169,6 +193,17 @@ public class MouseTargetSelector : MonoBehaviour
         if (logStats) Debug.Log("[MouseTargetSelector] 已取消目标 → 回到默认环线");
     }
 
+    /// <summary>
+    /// 能不能设这个目标（路口存在、且没被封）。
+    /// 给菜单 / 其它脚本查询用，避免重复代码。
+    /// </summary>
+    public bool CanTarget(int junctionIndex)
+    {
+        if (network == null) return false;
+        if (junctionIndex < 0 || junctionIndex >= network.JunctionCount) return false;
+        return network.IsJunctionOpen(junctionIndex);
+    }
+
     /// <summary>鼠标射线打到地面 y=0 上的哪个点</summary>
     bool RayToGround(Vector3 screenPos, out Vector3 hitPoint)
     {
@@ -195,12 +230,13 @@ public class MouseTargetSelector : MonoBehaviour
     {
         if (!drawRoute || network == null) return;
 
-        // 吸附半径
+        // ★ 用青色画"目标"相关的东西 —— 和左键加的障碍物（橙色）区分开，
+        //   一眼就知道哪个是"我要去哪"、哪个是"路上的坎"。
         if (_hasClick)
         {
-            Gizmos.color = new Color(1f, 0.8f, 0.1f, 0.5f);
+            Gizmos.color = new Color(0.1f, 0.9f, 0.9f, 0.5f);
             Gizmos.DrawWireSphere(_clickPoint, 0.6f);
-            Gizmos.color = new Color(1f, 0.8f, 0.1f, 0.25f);
+            Gizmos.color = new Color(0.1f, 0.9f, 0.9f, 0.25f);
             Gizmos.DrawLine(_clickPoint, _clickPoint + Vector3.up * 3f);
         }
 

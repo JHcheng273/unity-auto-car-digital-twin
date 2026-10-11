@@ -92,7 +92,9 @@ public class ObstacleManager : MonoBehaviour
 
         if (logStats)
             Debug.Log($"[ObstacleManager] 就绪，初始摆好 {Obstacles.Count} 个障碍物。\n" +
-                      "  O 键=随机加一个  Shift+O=加个大的  左键=点击处加  右键=删掉最近的\n" +
+                      "  ★ 左键=点击处加障碍   右键=不加障碍（让给 MouseTargetSelector 设目标）\n" +
+                      "  ★ Delete 键 或 Ctrl+右键 = 删掉离鼠标最近的障碍物\n" +
+                      "  O 键=随机加一个   Shift+O=加个大的\n" +
                       "  1=清空  2=挡住正前方(演示急停/绕障)  3=重摆3个  4=重摆5个  5=摆一堵墙");
     }
 
@@ -112,7 +114,9 @@ public class ObstacleManager : MonoBehaviour
         if (Input.GetKeyDown(KeyCode.Alpha4)) ResetTo(5);
         if (Input.GetKeyDown(KeyCode.Alpha5)) SpawnWall();
 
-        // ---- 鼠标：点击放置 / 删除 ----
+        // ---- 鼠标左键：在点击处放置障碍 ----
+        // ★ 左键**只**干这一件事。设目标点归 MouseTargetSelector 的右键管，
+        //   两者不再抢同一个键（之前左键既加障碍又设目标，车当然矛盾）。
         if (Input.GetMouseButtonDown(0) && _cam != null)
         {
             if (RayToGround(Input.mousePosition, out Vector3 hit))
@@ -121,8 +125,16 @@ public class ObstacleManager : MonoBehaviour
                 Debug.LogWarning("[ObstacleManager] 鼠标没点到地面上 —— 注意地面物体得有 Collider");
         }
 
-        if (Input.GetMouseButtonDown(1))
-            RemoveNearestToMouse();
+        // ---- 删除障碍：Delete 键，或 Ctrl + 右键 ----
+        // ★ 原来删除是"单独的右键"。现在右键是"设目标"，
+        //   所以删除让位成 Delete 键 / Ctrl+右键 —— 想删的时候仍然很快。
+        bool wantDelete = Input.GetKeyDown(KeyCode.Delete);
+        if (!wantDelete && Input.GetMouseButtonDown(1))
+        {
+            bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            wantDelete = ctrl;
+        }
+        if (wantDelete) RemoveNearestToMouse();
     }
 
     // ==================== 生成 ====================

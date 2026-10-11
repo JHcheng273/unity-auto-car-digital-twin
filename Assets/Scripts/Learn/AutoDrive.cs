@@ -22,6 +22,16 @@ public class AutoDrive : MonoBehaviour
     [Tooltip("走到头了（到达终点路口）之后怎么办：勾上=停车，取消=继续沿环线绕")]
     public bool stopAtDestination = false;
 
+    [Header("★ 保持在路面上行驶（过路口方式）")]
+    [Tooltip("勾上 = 车瞄准「入/出方向的角平分线」上的过路口点，平滑穿过路口。\n" +
+             "取消 = 直接瞄路口正中心（车会在路口里划急弯）")]
+    public bool useJunctionPassing = true;
+
+    [Tooltip("过路口点从路口中心往前推多远（米）。\n" +
+             "太小 = 等于瞄中心，没效果；太大 = 车会提前切到下一个路段上。\n" +
+             "取「路口圆盘半径 + 车长的一半」左右比较自然，默认 3")]
+    public float passAhead = 3f;
+
     [Header("转向")]
     public float fullSteerAngle = 45f;
     public float steerRate = 0.5f;
@@ -80,9 +90,86 @@ public class AutoDrive : MonoBehaviour
     {
         get
         {
-            if (UseGlobalRoute) return network.GetPosition(_route[_routeIndex]);
+            if (UseGlobalRoute) return GetRoutePoint(_routeIndex);
             return path != null ? path.GetPoint(_index) : transform.position;
         }
+    }
+
+    /// <summary>
+    /// ★★ 路线上第 i 站该瞄准哪个点（本文件最核心的"保持在路面上行驶"实现）。
+    ///
+    /// 【为什么不能直接瞄路口中心】
+    ///   A* 给的是"该经过哪几个路口"。如果车永远瞄路口**正中心**，
+    ///   它从哪个方向进来就朝哪个方向扎进去，出去时再拧一次舵 ——
+    ///   表现为：进路口前一顿、在路口中心原地划一道急弯、出路口又一下。
+    ///   看起来就是"在路口里乱拐"，不像在开车。
+    ///
+    /// 【正确做法：算一个"过路口点"】
+    ///   对中间路口，取「进来的方向」和「出去的方向」的**角平分线**，
+    ///   从路口中心沿平分线往前推 passAhead 米 —— 车瞄准这个点，
+    ///   就会顺着一条平滑弧线穿过路口：从来的方向切进去、朝去的方向切出来。
+    ///
+    ///       进来 ↗
+    ///           ┌──● 过路口点   ← 车瞄这里
+    ///           │ ╱
+    ///      ●────● 路口中心
+    ///            ╲
+    ///             ↘ 出去
+    ///
+    /// 【三种站位的区别】
+    ///   · 第一站：还在来的路上 → 就用路口中心（先到路口再说）
+    ///   · 中间站：有进有出 → 用角平分线过路口点
+    ///   · 最后一站：只有进没有出 → 从进入方向往前推，让车"开进路口再停"，
+    ///              而不是一头撞在路口中心上
+    /// </summary>
+    public Vector3 GetRoutePoint(int i)
+    {
+        if (!UseGlobalRoute) return CurrentTargetPoint;
+
+        if (i < 0) i = 0;
+        if (i >= _route.Count) i = _route.Count - 1;
+
+        Vector3 here = network.GetPosition(_route[i]);
+
+        // 不用过路口点的情况：关掉了，或者这是第一站（还没到路口）
+        if (!useJunctionPassing || i == 0) return here;
+
+        // ---- 算"进来"的方向：从上一站指向本站 ----
+        Vector3 prev = network.GetPosition(_route[i - 1]);
+        Vector3 inDir = here - prev;
+        inDir.y = 0f;
+        if (inDir.sqrMagnitude < 0.0001f) return here;
+        inDir.Normalize();
+
+        // ---- 算"出去"的方向 ----
+        Vector3 outDir;
+        if (i + 1 < _route.Count)
+        {
+            Vector3 next = network.GetPosition(_route[i + 1]);
+            outDir = next - here;
+            outDir.y = 0f;
+            if (outDir.sqrMagnitude < 0.0001f) outDir = inDir;
+            else outDir.Normalize();
+        }
+        else
+        {
+            // 终点站：没有下一站了，就沿"进来的方向"继续往前
+            outDir = inDir;
+        }
+
+        // ---- 角平分线：in + out 归一化 ----
+        //   ★ 如果 in 和 out 正好相反（掉头），和会接近 0 —— 那就没有"平滑弧线"可言，
+        //     保守起见直接用进来方向的 90° 侧向，至少不会除零。
+        Vector3 bis = inDir + outDir;
+        bis.y = 0f;
+        if (bis.sqrMagnitude < 0.0001f)
+        {
+            bis = Vector3.Cross(inDir, Vector3.up);   // 掉头 → 侧向切入
+            if (bis.sqrMagnitude < 0.0001f) return here;
+        }
+        bis.Normalize();
+
+        return here + bis * passAhead;
     }
 
     /// <summary>正在走全局 A* 路线（而不是固定环线）</summary>
@@ -483,6 +570,8 @@ public class AutoDrive : MonoBehaviour
     void SteerTowardTarget()
     {
         // ★ 两条分支：全局路线 → 朝当前路口打方向；否则朝固定环线路标点
+        //   全局路线时走 GetRoutePoint() —— 它会算"过路口点"，
+        //   让车顺着弧线穿过路口，而不是一头扎向路口中心
         Vector3 worldTarget = CurrentTargetPoint;
 
         Vector3 local = transform.InverseTransformPoint(worldTarget);
@@ -494,7 +583,11 @@ public class AutoDrive : MonoBehaviour
 
     bool AtTarget()
     {
-        Vector3 worldTarget = CurrentTargetPoint;
+        // ★ 到达判定用的是**路口本身**，不是"过路口点"。
+        //   因为过路口点被推到了路口外面，拿它判到达会让车永远到不了。
+        Vector3 worldTarget = UseGlobalRoute
+            ? network.GetPosition(_route[_routeIndex])
+            : CurrentTargetPoint;
 
         Vector3 local = transform.InverseTransformPoint(worldTarget);
         float distance = local.magnitude;
@@ -556,23 +649,40 @@ public class AutoDrive : MonoBehaviour
         // ★ 全局路线：把整条路线画出来，一眼看出 A* 选了什么路
         if (UseGlobalRoute)
         {
-            Gizmos.color = Color.magenta;
-            for (int i = 0; i < _route.Count; i++)
-            {
-                Vector3 p = network.GetPosition(_route[i]);
-                Gizmos.DrawWireSphere(p, 1.2f);
-                if (i > 0)
-                    Gizmos.DrawLine(network.GetPosition(_route[i - 1]), p);
-            }
-
             // 已经走过的部分涂暗一点
             Gizmos.color = new Color(0.5f, 0.5f, 0.5f, 0.6f);
             for (int i = 0; i < _routeIndex && i < _route.Count; i++)
-                Gizmos.DrawWireSphere(network.GetPosition(_route[i]), 1.6f);
+                Gizmos.DrawWireSphere(network.GetPosition(_route[i]), 1.2f);
 
+            // 还没走的：连线 + 画"过路口点"
+            Gizmos.color = Color.magenta;
+            for (int i = _routeIndex; i < _route.Count; i++)
+            {
+                Vector3 center = network.GetPosition(_route[i]);
+                Gizmos.DrawWireSphere(center, 1.2f);
+
+                if (i > _routeIndex)
+                    Gizmos.DrawLine(network.GetPosition(_route[i - 1]), center);
+
+                // ★ 把"过路口点"用青色画出来 —— 能看到车其实不是在瞄路口中心
+                if (useJunctionPassing && i > 0)
+                {
+                    Vector3 pass = GetRoutePoint(i);
+                    Gizmos.color = Color.cyan;
+                    Gizmos.DrawWireSphere(pass, 0.5f);
+                    Gizmos.DrawLine(center, pass);
+                    Gizmos.color = Color.magenta;
+                }
+            }
+
+            // 车 → 当前瞄准点（黄线：真正在追的点）
             Gizmos.color = Color.yellow;
             Gizmos.DrawLine(transform.position, CurrentTargetPoint);
-            Gizmos.DrawWireSphere(CurrentTargetPoint, junctionReach);
+            Gizmos.DrawWireSphere(CurrentTargetPoint, 0.8f);
+
+            // 到当前路口的到达圈（车真正用来判"到了"的那个半径）
+            Gizmos.color = new Color(1f, 0.6f, 0.1f, 0.8f);
+            Gizmos.DrawWireSphere(network.GetPosition(_route[_routeIndex]), junctionReach);
             return;
         }
 
