@@ -70,8 +70,26 @@ catch ME
     fprintf('    → 说明 Unity 正在 Play，占着 5006（这是正常的）\n');
 end
 
-%% 4. 结论
-fprintf('\n[4] 下一步\n');
+%% 4. 测试 5007（MATLAB 收摄像头画面的口）
+fprintf('\n[4] 测试绑定 5007（MATLAB 收摄像头的口）\n');
+ok5007 = false;
+try
+    u3 = udpport("datagram", "IPV4", "LocalPort", 5007, "Timeout", 0.05);
+    fprintf('    ✔ 绑定成功 —— 端口空闲\n');
+    fprintf('      注意：没画面时先别怀疑这里，去查 Unity 侧的车载摄像头：\n');
+    fprintf('        ① 车上 CameraStreamer 组件的 Enable Stream 勾了吗？\n');
+    fprintf('        ② 它的 Matlab Video Port 是不是 5007？\n');
+    ok5007 = true;
+    delete(u3);
+    pause(0.2);
+catch ME
+    fprintf('    ✘ 绑定失败：%s\n', ME.message);
+    fprintf('    → 5007 被占着。多半是上一次的视频接收端没关干净。\n');
+    fprintf('      老办法：关掉 MATLAB 重开。\n');
+end
+
+%% 5. 结论
+fprintf('\n[5] 下一步\n');
 if ok5005
     fprintf('    5005 已经可用了。按这个顺序跑：\n');
     fprintf('      ① 先在 MATLAB 敲  unity_dashboard   （它先开始监听，等着）\n');
@@ -79,5 +97,9 @@ if ok5005
     fprintf('    顺序反了也能用，但前提是 Unity 一直还在 Play 中。\n');
 else
     fprintf('    5005 还占着 —— 先重启 MATLAB，再回来跑上面两步。\n');
+end
+if ~ok5007
+    fprintf('    （5007 也占着的话，仪表盘起来后会提示"视频端口起不来"，\n');
+    fprintf('      状态面板照常工作，只是没有实时画面。）\n');
 end
 fprintf('\n=============================================\n');

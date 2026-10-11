@@ -55,9 +55,34 @@ clear; clc; close all;
 UNITY_IP           = "127.0.0.1";   % 同一台电脑；跨机填 Unity 那台的局域网 IP
 MATLAB_LISTEN_PORT = 5005;          % MATLAB 监听（Unity 往这发状态）
 UNITY_LISTEN_PORT  = 5006;          % Unity 监听（MATLAB 往这发指令）
+VIDEO_PORT         = 5007;          % MATLAB 监听（Unity 往这发摄像头画面）
+
+% ---- 摄像头 / 偏离判定 ----
+ENABLE_VIDEO   = true;   % 关掉的话就不收画面、不显示摄像头面板（省点 CPU）
+DEV_DIST_LIMIT = 2.0;    % 横向偏离多少米算"压线"
+DEV_ANG_LIMIT  = 35;     % 车头方向跟路径方向差多少度算"偏了"
+
+% ---- 航点表（必须和 Unity 场景里的路径一致）----
+% 用来算"车离路径多远、车头歪没歪"。
+% ★ 这里填的是 mycar.unity 里那 4 个点的世界坐标 (x, z)。
+%   以后在 Unity 里改了航点位置，这张表也要跟着改。
+WP_POINTS = [  8.49,  -3.10;
+              -1.51,   6.90;
+             -11.51,  -3.10;
+              -1.51, -13.10];
 
 RUN_SECONDS = Inf;   % ★ 常驻：不因超时退出，只有关窗口才停
                      %   （想限时跑就写个秒数，比如 300 = 5 分钟后自动停并存 CSV）
+% ★ 也可以用环境变量临时覆盖，方便"录一段固定时长"或自动化测试：
+%     set DASH_RUN_SECONDS=30  &&  matlab -batch unity_dashboard
+envRun = getenv('DASH_RUN_SECONDS');
+if ~isempty(envRun)
+    v = str2double(envRun);
+    if ~isnan(v) && v > 0
+        RUN_SECONDS = v;
+        fprintf("（环境变量 DASH_RUN_SECONDS=%s）本次只跑 %.0f 秒\n", envRun, v);
+    end
+end
 PLOT_EVERY  = 2;     % 每收几包刷一次曲线（太频繁会卡）
 RECONNECT_GAP = 3;   % 秒。超过这么久没收到包算"Unity 断开"，界面切回等待态
                      %   （Unity 停 Play 后本来就不再发包，用它来判定断开）
@@ -106,15 +131,36 @@ catch ME
 end
 fprintf("监听 %d，等待 Unity 数据…\n", MATLAB_LISTEN_PORT);
 
+% ---- 视频接收端（独立端口 5007，和状态包互不干扰）----
+% ★ 必须单独 try 包起来：unity_dashboard 的两个头等大事是
+%   "收状态 + 画仪表盘"。万一 5007 起不来（被占/防火墙），
+%   也不该把整个仪表盘拖下水 —— 大不了这次没有画面。
+videoRx = [];
+if ENABLE_VIDEO
+    try
+        videoRx = VideoReceiver(VIDEO_PORT);
+        fprintf("监听 %d，等待摄像头画面…\n", VIDEO_PORT);
+    catch ME
+        fprintf("⚠ 视频端口 %d 起不来（%s）\n", VIDEO_PORT, ME.message);
+        fprintf("  仪表盘照常运行，只是没有实时画面。\n");
+        fprintf("  排查：netstat -ano | findstr %d\n", VIDEO_PORT);
+        videoRx = [];
+    end
+end
+
 %% ===== 3. 建仪表盘 =====
 BG = [0.93 0.94 0.96];
+% ★ 窗口比原来宽了 400px：右边新开一列放摄像头。
+%   原来三列是 [16..] [388..] [784..]，各宽 380、右边界 1164；
+%   现在再加一列 [1180..]，宽 380、右边界 1560，窗口留到 1580。
+FIG_W = 1560;
 fig = uifigure('Name', 'Unity 数字孪生 · 实时驾驶仪表盘', ...
-               'Position', [60 40 1180 780], 'Color', BG);
+               'Position', [40 40 FIG_W 780], 'Color', BG);
 
 % ---------- 标题 ----------
 uilabel(fig, 'Text', 'UNITY 数字孪生 · 实时驾驶仪表盘', ...
         'Position', [24 728 660 38], 'FontSize', 20, 'FontWeight', 'bold');
-lblClock = uilabel(fig, 'Text', '等待连接…', 'Position', [780 728 376 38], ...
+lblClock = uilabel(fig, 'Text', '等待连接…', 'Position', [FIG_W-400 728 376 38], ...
         'FontSize', 15, 'HorizontalAlignment', 'right', 'FontColor', [0.38 0.42 0.48]);
 
 % ---------- 左列：车速表 ----------
@@ -241,8 +287,20 @@ lblMsg = uilabel(pnlDetail, 'Text', {'等待 Unity 数据…'}, ...
         'Position', [12 10 356 178], 'FontSize', 12, ...
         'VerticalAlignment', 'top', 'WordWrap', 'on', 'FontColor', [0.22 0.25 0.31]);
 
+% ---------- 第四列：车载摄像头（实时路况 + 偏离告警）----------
+% 这一列是新加的，所以窗口宽度也跟着加宽了（见上面 FIG_W）。
+% 面板高度占满右列：从 y=240 到 y=712。
+camPanel = [];
+if ENABLE_VIDEO
+    camPanel = CameraPanel(fig, [1180 240 380 472]);
+    camPanel.setLimits(DEV_DIST_LIMIT, DEV_ANG_LIMIT);
+end
+
 % ---------- 底部：控制台 ----------
-pnl = uipanel(fig, 'Title', '控制台', 'Position', [16 16 1148 148], 'FontSize', 13);
+% ★ 宽度要跟着窗口走：原来是写死的 1148（窗口 1180 减左右边距 32），
+%   窗口加宽后如果不改，控制台右边会空出一大块。
+%   干脆用 FIG_W 算，以后改窗口宽度就不用再回来动这里。
+pnl = uipanel(fig, 'Title', '控制台', 'Position', [16 16 FIG_W-32 148], 'FontSize', 13);
 
 % 第 1 组：运行模式
 uilabel(pnl, 'Text', '运行模式', 'Position', [18 106 120 22], 'FontSize', 12, ...
@@ -312,6 +370,14 @@ prevCount = 0;     % 上一秒的收包数，用来算**瞬时**速率（不是�
 rateT     = 0;     % 上次刷新速率的时刻（MATLAB 变量名不能以下划线开头，所以叫 rateT）
 v_model_sess = 0;  % 本轮开始时的孪生转速（重连后从当前车速接上去，不跳变）
 
+% ---- 摄像头 / 偏离判定相关 ----
+nWpVid    = size(WP_POINTS, 1);   % 航点个数
+vidFramesDrawn = 0;               % 画过多少帧（拿来算显示帧率）
+vidFpsT   = 0;                    % 上次算显示帧率的时刻
+vidFps    = 0;                    % 显示帧率（显示在面板提示里）
+lastDevInfo = '路径跟踪正常';      % 上一次的偏离说明
+lastDevState = false;             % 上一次的偏离状态（用来判断"状态变了没"，变了才打日志）
+
 % 预分配日志数组（循环里用 end+1 增长数组每次都要重新分配内存，很慢，MATLAB 也会警告）
 MAXLOG = 50000;
 log_t    = zeros(MAXLOG,1);  log_v    = zeros(MAXLOG,1);
@@ -323,16 +389,41 @@ stateNames = {'Driving','Blocked','Finished'};
 
 while toc(t0) < RUN_SECONDS && isvalid(fig)
 
+    % ★ 摄像头画面和状态包是**两条独立的流**，走不同端口。
+    %   所以收画面这件事必须放在 `if 有状态包` 之外 ——
+    %   否则 Unity 一停发状态（比如按了暂停），画面就跟着冻住了。
+    camImg = [];
+    if ~isempty(videoRx)
+        camImg = videoRx.Poll();     % 没新帧就返回 []，不是错误
+    end
+
     n = u.NumDatagramsAvailable;
 
     if n > 0
-        d   = read(u, 1, "uint8");          % 读 1 个数据报 → Datagram 对象
-        raw = uint8(d(1).Data);             % 字节内容在 .Data 里
-        s   = string(char(raw(:)'));
-        try
-            st = jsondecode(s);
-        catch
-            continue;                       % 半包/脏数据，跳过别崩
+        % ★ 一圈把积压的状态包**全收掉**，只把最后一个拿去刷界面。
+        %   原来这里一圈只 read 一个包，后果是：
+        %     Unity 发 20 Hz，而主循环因为要刷界面/解图只能跑到 12~15 Hz，
+        %     收包速率就被循环速率卡住了 —— 界面看到的永远是旧数据，
+        %     而且这些没读的包会一直堆在队列里，越堆越滞后。
+        %   全收掉之后，界面反映的永远是"最新一刻"的状态。
+        %   上限 50 是防呆：万一 Unity 疯狂刷包，也别让这一圈卡太久。
+        nTake = min(n, 50);
+        st = [];
+        for kRead = 1:nTake
+            d = read(u, 1, "uint8");
+            if isempty(d), break; end
+            raw = uint8(d(1).Data);
+            s   = string(char(raw(:)'));
+            try
+                cand = jsondecode(s);
+            catch
+                continue;                   % 半包/脏数据，跳过别崩
+            end
+            st = cand;                      % 只留最后一个，前面的直接丢掉
+        end
+
+        if isempty(st)
+            continue;                       % 这一圈全是脏包，跳过
         end
 
         count = count + 1;
@@ -340,7 +431,20 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
         %% --- 4.0 新会话检测（常驻模式的核心）---
         % 情形 A：第一次收包            → 开一轮
         % 情形 B：隔了 RECONNECT_GAP 秒以上才又来包 → 说明 Unity 中途停过 Play，开新一轮
-        if isnan(last_rx) || (toc(t0) - last_rx) > RECONNECT_GAP
+        %
+        % ★ 这里有个坑，专门防一下：**启动后的头几秒不能算"断开"**。
+        %   原因是第一帧 JPEG 解码要走一次冷启动（imread 首次调用要加载编解码器），
+        %   实测能卡住 1~3 秒。这几秒里主循环根本没在 read，包全积在队列里，
+        %   等它回来时 `toc - last_rx` 就超了 3 秒 → 被误判成"Unity 重连"，
+        %   日志里莫名其妙多出"第 2 轮"，曲线也被白切一刀。
+        %   办法：只有在**真正收到过一段数据之后**（startupGrace 之后）才允许判断开。
+        STARTUP_GRACE = 8;      % 秒。启动后这段时间内不判"断开"
+        firstEver     = isnan(last_rx);
+        oldEnough     = toc(t0) > STARTUP_GRACE;
+        gap           = 0;
+        if ~firstEver, gap = toc(t0) - last_rx; end
+
+        if firstEver || (gap > RECONNECT_GAP && oldEnough)
             sessCount = sessCount + 1;
             % ★ 位置差分基准要连 pos_prev 一起清！
             %   只清 t_prev 的话，重连后仍是拿「停 Play 前那个位置」和「新 Play 的当前位置」
@@ -349,7 +453,17 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
             pos_prev = [];
             v_model  = v_model_sess;   % 孪生转速接着上次，别跳回 0
             clearpoints(hV);  clearpoints(hVdes);  clearpoints(hVmod);   % 曲线另起一段
-            fprintf("[第 %d 轮] 收到 Unity 数据，链路已建立\n", sessCount);
+            if firstEver
+                fprintf("[第 %d 轮] 收到 Unity 数据，链路已建立\n", sessCount);
+            else
+                fprintf("[第 %d 轮] 数据中断 %.1f 秒后恢复，判定为 Unity 重新 Play\n", ...
+                        sessCount, gap);
+            end
+            % 重连时把视频拼接状态和积压包也清掉：
+            % 不清的话，队列里上一轮的残片会跟新一轮的帧号混在一起
+            if ~isempty(videoRx)
+                videoRx.Flush();
+            end
         end
         last_rx   = toc(t0);
         connected = true;
@@ -363,6 +477,20 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
         end
         pos_prev = [st.x, st.z];
         t_prev   = st.t;
+
+        % ★ dt 必须夹住上限。
+        %   孪生模型是"一阶惯性"：v_model += (vRef - v_model) * dt / TAU。
+        %   只要 dt 比 TAU（1.2 秒）大几倍，这一步就会**过冲** ——
+        %   实测主循环卡一下、dt 变成 4 秒时，v_model 直接冲到 39 m/s，
+        %   然后开始在正负之间来回振荡，曲线彻底失控。
+        %   MATLAB 主循环偶尔卡一下是常态（窗口重绘、GC、解码冷启动），
+        %   所以这里把 dt 限制在 0.5 秒以内：宁可让模型走慢一点，
+        %   也不要让它一步跨过头。
+        DT_MAX = 0.5;
+        if dt > DT_MAX
+            dt = DT_MAX;
+        end
+
         s_actual = s_actual + ds;
 
         %% --- 4.2 按模式决策：给多快的速度、要不要刹车 ---
@@ -503,6 +631,31 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
         lblSend.Text  = sprintf('已下发 %d 条指令', seq);
         lblStat.Text  = sprintf('收包 %d 条   第 %d 轮连接', count, sessCount);
 
+        %% --- 4.6b 偏离判定（驱动摄像头面板变红）---
+        % 用 Unity 报上来的 (x, z, yaw, wp) 判断车现在有没有压线/歪头。
+        % 判定逻辑在 check_deviation.m 里，这里只负责把结果变成界面状态。
+        hasYaw = isfield(st, 'yaw');
+        if hasYaw
+            try
+                [devNow, devDist, devAng, devInfo] = check_deviation( ...
+                    st.x, st.z, st.yaw, st.wp, WP_POINTS, nWpVid, ...
+                    DEV_DIST_LIMIT, DEV_ANG_LIMIT);
+            catch ME
+                % 判定失败不该拖垮仪表盘：退回"正常"，并把原因写到状态条
+                devNow = false;  devDist = 0;  devAng = 0;
+                devInfo = sprintf('偏离判定失败：%s', ME.message);
+            end
+            % ★ 先比后赋值 —— 顺序反了的话，下面那句"翻转时打日志"永远不成立
+            %   （lastDevState 已经等于 devNow 了，比出来永远是"没变"）。
+            if devNow && ~lastDevState
+                fprintf("[偏离] t=%.1fs  %s  (x=%.1f, z=%.1f, yaw=%.0f°)\n", ...
+                        st.t, devInfo, st.x, st.z, st.yaw);
+            end
+
+            lastDevInfo  = devInfo;
+            lastDevState = devNow;
+        end
+
         % 收包速率：用"最近 1 秒新增多少包"算，才是真实速率。
         % （原来用 累计包数/总秒数，一旦断开重连，这个数会被历史拖住，看不出当前状态）
         elapsed = toc(t0);
@@ -576,12 +729,76 @@ while toc(t0) < RUN_SECONDS && isvalid(fig)
             end
         end
     end
+
+    %% --- 4.9 刷新摄像头面板 ---
+    % ★ 放在循环末尾、两种分支之外 —— 不管这轮有没有状态包，画面都要刷。
+    %   要是塞进 `if n > 0` 里，Unity 一不发状态包画面就冻住，看着像卡死。
+    if ~isempty(camPanel)
+        % 状态条的措辞要区分"没画面"和"有画面但没偏离"
+        if ~isempty(camImg)
+            vidFramesDrawn = vidFramesDrawn + 1;
+            camPanel.Update(camImg, lastDevState, lastDevInfo);
+        elseif camPanel.FramesShown == 0
+            % 一次都没收到过画面
+            if ~isempty(videoRx) && videoRx.FramesBad > 0
+                camPanel.SetStatus(sprintf('画面丢帧 %d 次（检查 Unity 的 CameraStreamer）', ...
+                                    videoRx.FramesBad), [0.80 0.45 0.10]);
+            else
+                camPanel.SetStatus('等待画面…（Unity 侧 Camera Streamer 勾了吗？）', ...
+                                   [0.50 0.53 0.58]);
+            end
+        else
+            % 有画面，但这轮没新帧 —— 只更新偏离状态，不重传图像
+            camPanel.Update([], lastDevState, lastDevInfo);
+        end
+    end
+
+    % 画面显示帧率：拿"最近这段时间画了多少帧"算。
+    % 和 Unity 的发送帧率一比，就知道 MATLAB 有没有消费不过来
+    % （跟不上就会表现为画面越来越滞后）。
+    if ~isempty(camPanel) && camPanel.FramesShown > 0
+        elapsedNow = toc(t0);
+        if elapsedNow - vidFpsT > 2
+            vidFps         = vidFramesDrawn / max(0.001, elapsedNow - vidFpsT);
+            vidFramesDrawn = 0;
+            vidFpsT        = elapsedNow;
+
+            % 顺便把丢帧数写上去：丢帧一直涨说明网络或 MATLAB 跟不上
+            if ~isempty(videoRx) && videoRx.FramesBad > 0
+                rxInfo = sprintf('   ·   丢帧 %d', videoRx.FramesBad);
+            else
+                rxInfo = '';
+            end
+            camPanel.SetFps(vidFps, rxInfo);
+        end
+    end
 end
 
 %% ===== 5. 收尾：存 CSV + 打印统计 =====
 % 常驻模式（RUN_SECONDS = Inf）下，走到这里只有一种可能：**你关掉了窗口**。
 % 所以这里可以放心当作"实验结束"，存盘 + 打统计。
-clear u;
+clear u;                       % 关掉状态端口 5005
+
+% ★ 视频统计要在 delete 之前取出来（对象删了就读不到了）
+if ~isempty(videoRx)
+    camOk  = videoRx.FramesOk;
+    camBad = videoRx.FramesBad;
+    camBytes = videoRx.BytesRx;
+    camSkip  = videoRx.Skipped;
+    delete(videoRx);           % ★ 视频端口 5007 也必须一起关，
+                               %   不关的话下次重跑会报"端口被占用"，
+                               %   而且只能重启 MATLAB 才能解开。
+    fprintf("\n摄像头：解码 %d 帧，丢弃 %d 帧，共收 %.1f MB\n", ...
+            camOk, camBad, camBytes / 1048576);
+    if camOk + camBad > 0
+        fprintf("        丢帧率 %.1f%%（>5%% 就该调低 Unity 的分辨率或帧率）\n", ...
+                100 * camBad / (camOk + camBad));
+    end
+    if camSkip > 0
+        fprintf("        为避免卡主循环，跳过了 %d 帧没解码（正常，不用管）\n", camSkip);
+    end
+end
+clear videoRx camPanel;
 
 if nlog > 0
     % 把预分配数组截到实际长度
